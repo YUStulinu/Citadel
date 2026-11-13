@@ -138,7 +138,7 @@ finish switching out.
   fetches pages and a 404 from `httpd` through virtio-net.
 - **libc**: identical output to glibc on 23,000 `printf`/`strtod`/`scanf` cases.
 - **Open POSIX Test Suite** (from LTP 20240930), 37 interfaces about processes, signals, memory,
-  clocks and time: **540 of 547 tests pass on Citadel, exactly as many as on Linux**, with the same
+  clocks and time: **541 of 547 tests pass on Citadel, exactly as many as on Linux**, with the same
   binaries; see [POSIX results](#posix-results).
 
 ### POSIX results
@@ -150,14 +150,15 @@ message queues, `langinfo.h` and the like. The same 547 static binaries ran on b
 
 | | pass | fail | unresolved | unsupported | untested | hung |
 |---|---:|---:|---:|---:|---:|---:|
-| Citadel | 540 | 1 | 0 | 4 | 1 | 1 |
-| Linux (Alpine 6.6) | 540 | 1 | 0 | 4 | 1 | 1 |
+| Citadel | 541 | 0 | 0 | 4 | 1 | 1 |
+| Linux (Alpine 6.6) | 541 | 0 | 0 | 4 | 1 | 1 |
 
-The seven that do not pass are the same tests on both systems:
-- `sigismember.5-1` fails on both: it expects an error for an invalid signal number, which the C
-  library does not report (glibc does not either).
+The six that do not pass are the same tests on both systems:
 - `nanosleep.10000-1` sleeps longer than the 20-second limit on both.
 - The other five report UNSUPPORTED or UNTESTED for optional behaviour.
+
+(Both runs use Citadel's C library, so a library bug shows up on both: `sigismember.5-1` failed on
+both until `sigismember` learned to reject invalid signal numbers.)
 
 The first run on Citadel passed 499 tests. The 41 fixes behind the rest:
 - stopping and continuing processes (`SIGSTOP`/`SIGTSTP`/`SIGCONT`, `wait` with `WUNTRACED` and

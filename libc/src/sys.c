@@ -359,7 +359,10 @@ int sigdelset(sigset_t *s, int n) {
     *s &= ~(1UL << (n - 1));
     return 0;
 }
-int sigismember(const sigset_t *s, int n) { return n > 0 && n < NSIG && (*s >> (n - 1)) & 1; }
+int sigismember(const sigset_t *s, int n) {
+    if (n <= 0 || n >= NSIG) { errno = EINVAL; return -1; }
+    return (*s >> (n - 1)) & 1;
+}
 int raise(int sig) { return kill(getpid(), sig); }
 
 pid_t setpgrp(void) { return setpgid(0, 0); }
