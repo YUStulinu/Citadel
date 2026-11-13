@@ -95,12 +95,17 @@ jobs:
           curl -sf http://127.0.0.1:8080/ | grep "Served by Citadel"
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/missing)" = 404
           gcc -O2 -o build/httpload tools/httpload.c && build/httpload 127.0.0.1 8080 /index.html 8 5
+          pkill -f qemu-system-x86_64 || true
+          sleep 2
       - name: Official Lua 5.4 test suite on Citadel
         run: sh tools/guest-test.sh 900 /bin/sh /tests/luatests.sh
       - name: Open POSIX Test Suite subset on Citadel
         run: |
           sh tools/guest-test.sh 1800 /tests/posixrun /posix 20 | tee build/posix.txt
-          grep "posixrun:" build/posix.txt
+          # 541 of 547 pass locally, as on Linux; allow a little for timing-sensitive tests here.
+          pass=$(sed -n 's/.*posixrun: .* \([0-9]*\) pass,.*/\1/p' build/posix.txt)
+          echo "POSIX tests passed: $pass"
+          test "${pass:-0}" -ge 535
       - uses: actions/upload-artifact@v4
         if: always()
         with:

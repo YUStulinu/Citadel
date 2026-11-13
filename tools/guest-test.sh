@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs one program inside Citadel and returns its exit status: builds the image with
 # "init=/bin/init -- PROGRAM ARGS" on the kernel command line, boots it in QEMU and decodes the
-# status that /bin/init passes to the debug-exit device when the program ends.
+# status that /bin/init reports when the program ends.
 #
 #   OUT=build tools/guest-test.sh SECONDS PROGRAM [ARGS...]
 #
@@ -26,11 +26,18 @@ if [ $status -eq 124 ]; then
     echo "guest-test: $NAME timed out after $LIMIT s"
     exit 124
 fi
-# isa-debug-exit: QEMU exits with (code << 1) | 1.
-if [ $((status & 1)) -eq 1 ]; then
-    code=$(((status - 1) / 2))
-    echo "guest-test: $NAME exited with status $code"
-    exit "$code"
+# /bin/init prints how the program ended, then powers off through isa-debug-exit (QEMU exits
+# with (code << 1) | 1). Both must agree: a QEMU that failed to start also exits with 1, which
+# must not count as "the program exited with 0".
+reported=$(tr -d '\r' <"$LOG" | sed -n 's/^init: .* exited with status \([0-9]*\)$/\1/p' | tail -1)
+if [ -z "$reported" ]; then
+    echo "guest-test: $NAME never finished (QEMU status $status)"
+    head -5 "$LOG"
+    exit 3
+fi
+if [ $((status & 1)) -eq 1 ] && [ $(((status - 1) / 2)) -eq "$reported" ]; then
+    echo "guest-test: $NAME exited with status $reported"
+    exit "$reported"
 fi
 echo "guest-test: QEMU stopped with status $status (kernel panic or power-off failure)"
 exit 3
