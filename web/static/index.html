@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Citadel console</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>Citadel</h1>
+  <span id="status">connecting</span>
+</header>
+<main>
+  <section class="console">
+    <h2>Serial console (COM1)</h2>
+    <pre id="term" tabindex="0"></pre>
+  </section>
+  <section class="profile">
+    <h2>Kernel profiler (COM2)</h2>
+    <div id="split">waiting for samples: boot with <code>profile=2</code> or run <code>profctl stream</code></div>
+    <canvas id="chart"></canvas>
+    <div class="legend"><i class="k"></i> kernel <i class="u"></i> user <span id="scale"></span></div>
+    <h3>Kernel functions, last 0.5 s (share of busy time)</h3>
+    <table><tbody id="window"></tbody></table>
+    <h3>Kernel functions since start</h3>
+    <table><tbody id="total"></tbody></table>
+    <h3>Processes in user mode, last 0.5 s</h3>
+    <table><tbody id="procs"></tbody></table>
+  </section>
+</main>
+<script type="module" src="/client/client/app.js"></script>
+</body>
+</html>

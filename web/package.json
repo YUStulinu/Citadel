@@ -1,0 +1,16 @@
+{
+  "name": "citadel-web-console",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Web console for Citadel: the serial console in the browser and a live view of the kernel's sampling profiler",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
+    "test": "node --test dist/node/test/",
+    "start": "node dist/node/src/server/main.js"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3",
+    "@types/node": "20.16.11"
+  }
+}

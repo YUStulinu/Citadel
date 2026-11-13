@@ -820,6 +820,18 @@ static int cmd_poweroff(int argc, char **argv) {
     return 1;
 }
 
+/* profctl start|stream|stop: Citadel's sampling profiler (syscall 1000); /proc/profile shows it. */
+static int cmd_profctl(int argc, char **argv) {
+    long cmd = argc > 1 && !strcmp(argv[1], "stop") ? 0 : argc > 1 && !strcmp(argv[1], "stream") ? 2 : 1;
+    long r;
+    __asm__ volatile("syscall" : "=a"(r) : "a"(1000L), "D"(cmd), "S"(0L) : "rcx", "r11", "memory");
+    if (r < 0) {
+        fprintf(stderr, "profctl: not supported here (error %ld)\n", -r);
+        return 1;
+    }
+    return 0;
+}
+
 static int cmd_sync(int argc, char **argv) {
     sync();
     return 0;
@@ -835,7 +847,7 @@ static const struct {
     {"basename", cmd_basename}, {"cat", cmd_cat},   {"clear", cmd_clear},       {"cp", cmd_cp},       {"date", cmd_date},
     {"dirname", cmd_dirname},   {"echo", cmd_echo}, {"env", cmd_env},           {"false", cmd_false}, {"grep", cmd_grep},
     {"head", cmd_head},         {"kill", cmd_kill}, {"ln", cmd_ln},             {"ls", cmd_ls},       {"mkdir", cmd_mkdir},
-    {"mv", cmd_mv},             {"poweroff", cmd_poweroff}, {"ps", cmd_ps},     {"rm", cmd_rm},       {"rmdir", cmd_rmdir},
+    {"mv", cmd_mv},             {"poweroff", cmd_poweroff}, {"profctl", cmd_profctl}, {"ps", cmd_ps},     {"rm", cmd_rm},       {"rmdir", cmd_rmdir},
     {"seq", cmd_seq},           {"sleep", cmd_sleep}, {"sort", cmd_sort},       {"stat", cmd_stat},   {"sync", cmd_sync},   {"tail", cmd_tail},
     {"tee", cmd_tee},           {"touch", cmd_touch}, {"true", cmd_true},       {"uname", cmd_uname}, {"uniq", cmd_uniq},
     {"wc", cmd_wc},             {"yes", cmd_yes},

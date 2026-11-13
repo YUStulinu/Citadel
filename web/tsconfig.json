@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "outDir": "dist/node",
+    "rootDir": ".",
+    "strict": true,
+    "noUnusedLocals": true,
+    "esModuleInterop": true,
+    "types": ["node"],
+    "lib": ["ES2022"]
+  },
+  "include": ["src/server/**/*.ts", "src/shared/**/*.ts", "test/**/*.ts"]
+}

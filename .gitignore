@@ -10,3 +10,5 @@ node_modules/
 /web/dist/
 /results/raw/
 /third_party/
+web/node_modules/
+web/dist/
