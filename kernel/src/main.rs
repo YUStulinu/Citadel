@@ -127,6 +127,11 @@ extern "C" fn kmain(boot_info_phys: u64) -> ! {
         kprintln!("citadel: mounted {d} on /mnt");
     }
     net::init();
+    match bi.arg("profile") {
+        Some("1") => profile::start(false),
+        Some("2") => profile::start(true),
+        _ => {}
+    }
 
     let init = bi.arg("init").unwrap_or("/bin/init");
     // Words after "--" on the command line become init's arguments.

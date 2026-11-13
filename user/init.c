@@ -2,6 +2,7 @@
    With arguments (init=/bin/init cmdline: "init /bin/prog args"), runs that program once and
    powers the machine off when it exits, which is how automated test runs work. */
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +30,51 @@ static long sys_poweroff(int code) {
     return r;
 }
 
+/* Linux interface set-up with the classic ioctls: address, netmask, up. */
+struct ifreq_min {
+    char name[16];
+    union {
+        struct {
+            unsigned short family, port;
+            unsigned addr;
+            char zero[8];
+        } sin;
+        short flags;
+        char pad[24];
+    } u;
+};
+
+static void if_config(int s, const char *name, unsigned addr_be, unsigned mask_be) {
+    struct ifreq_min r;
+    memset(&r, 0, sizeof r);
+    strncpy(r.name, name, 15);
+    r.u.sin.family = 2;
+    r.u.sin.addr = addr_be;
+    sys6(16, s, 0x8916, (long)&r, 0, 0); /* SIOCSIFADDR */
+    r.u.sin.addr = mask_be;
+    sys6(16, s, 0x891c, (long)&r, 0, 0); /* SIOCSIFNETMASK */
+    memset(&r.u, 0, sizeof r.u);
+    r.u.flags = 0x1 | 0x40;              /* IFF_UP | IFF_RUNNING */
+    sys6(16, s, 0x8914, (long)&r, 0, 0); /* SIOCSIFFLAGS */
+}
+
+/* Linux baseline only: load the virtio network modules shipped in the initrd (Alpine builds
+   them as modules) and configure lo and eth0 like QEMU's user network expects. */
+static void linux_net(void) {
+    static const char *const mods[] = {"/lib/modules/failover.ko", "/lib/modules/net_failover.ko", "/lib/modules/virtio_net.ko"};
+    for (unsigned i = 0; i < sizeof mods / sizeof *mods; i++) {
+        int fd = open(mods[i], O_RDONLY);
+        if (fd < 0) continue;
+        sys6(313, fd, (long)"", 0, 0, 0); /* finit_module */
+        close(fd);
+    }
+    int s = (int)sys6(41, 2, 2, 0, 0, 0);
+    if (s < 0) return;
+    if_config(s, "lo", 0x0100007f, 0x000000ff);
+    if_config(s, "eth0", 0x0f02000a, 0x00ffffff); /* 10.0.2.15/24, little-endian bytes */
+    close(s);
+}
+
 /* On Linux the kernel does not mount anything for us. */
 static void linux_mounts(void) {
     if (access("/proc/self", F_OK) == 0) return;
@@ -40,6 +86,7 @@ static void linux_mounts(void) {
     sys6(165, (long)"tmpfs", (long)"/tmp", (long)"tmpfs", 0, 0);
     mkdir("/sys", 0555);
     sys6(165, (long)"sysfs", (long)"/sys", (long)"sysfs", 0, 0);
+    linux_net();
 }
 
 static pid_t spawn(char *const argv[], int fg) {

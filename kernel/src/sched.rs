@@ -377,8 +377,24 @@ pub fn schedule() {
         cpu::irq_restore(irq);
         return;
     }
-    // The task may still be finishing a switch on another CPU.
+    // The task may still be finishing a switch on another CPU. Wait briefly; if it stays there,
+    // that CPU may itself be waiting for our current task (each picked the other's task): then
+    // put it back and switch to the idle task instead, which lets both switches complete.
+    let mut next = next;
+    let mut spins = 0u32;
     while next.on_cpu.load(Ordering::Acquire) {
+        spins += 1;
+        if spins > 20_000 {
+            cs.rq.lock().push_front(next.clone());
+            cs.nr.store(cs.rq.lock().len(), Ordering::Relaxed);
+            cs.need_resched.store(true, Ordering::Relaxed);
+            next = unsafe { (*cs.idle.get()).clone().unwrap() };
+            if Arc::ptr_eq(&next, &cur) {
+                cpu::irq_restore(irq);
+                return;
+            }
+            break;
+        }
         core::hint::spin_loop();
     }
     next.on_cpu.store(true, Ordering::Release);

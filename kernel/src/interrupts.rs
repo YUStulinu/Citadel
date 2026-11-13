@@ -31,12 +31,17 @@ pub fn handle(f: &mut TrapFrame) {
         0..=31 => exception(f),
         apic::TIMER_VECTOR => {
             apic::eoi();
-            crate::profile::sample(f);
-            crate::sched::tick();
+            if crate::profile::on_timer(f) {
+                crate::sched::tick();
+            }
         }
         apic::IPI_RESCHEDULE => {
             apic::eoi();
             pc.sched.need_resched.store(true, Ordering::Relaxed);
+        }
+        apic::IPI_PROFILE => {
+            apic::eoi();
+            crate::profile::on_ipi();
         }
         apic::IPI_TLB => {
             apic::eoi();

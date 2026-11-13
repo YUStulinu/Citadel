@@ -77,9 +77,11 @@ pub fn stack() -> crate::sync::Guard<'static, Stack> {
     STACK.get().lock()
 }
 
-/// Frames from the card (interrupt context): queue them for the network thread.
-pub fn receive(frames: Vec<Vec<u8>>) {
-    RXQ.lock().extend(frames);
+static NIC_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// The card has received frames (interrupt context): the network thread collects them.
+pub fn nic_ready() {
+    NIC_PENDING.store(true, Ordering::Release);
     NET_WQ.wake_all();
 }
 
@@ -137,22 +139,29 @@ pub fn init() {
 
 fn net_thread() {
     let mut next_tick = now();
+    let nic = *NIC.get();
     loop {
-        let frames: Vec<Vec<u8>> = RXQ.lock().drain(..).collect();
+        let mut frames: Vec<Vec<u8>> = RXQ.lock().drain(..).collect();
+        let t = now();
+        if let Some(n) = nic {
+            // Interrupt-driven, plus a sweep on every tick (covers a card without MSI-X).
+            if NIC_PENDING.swap(false, Ordering::AcqRel) || t >= next_tick {
+                frames.extend(n.collect(true));
+            }
+        }
         if !frames.is_empty() {
             let mut st = stack();
             for f in frames {
                 st.input(&f);
             }
         }
-        let t = now();
         if t >= next_tick {
             stack().timers(t);
             next_tick = t + 10_000_000;
         }
-        if RXQ.lock().is_empty() {
+        if RXQ.lock().is_empty() && !NIC_PENDING.load(Ordering::Acquire) {
             crate::sched::arm_timer(next_tick);
-            NET_WQ.wait_until(|| !RXQ.lock().is_empty() || now() >= next_tick);
+            NET_WQ.wait_until(|| !RXQ.lock().is_empty() || NIC_PENDING.load(Ordering::Acquire) || now() >= next_tick);
         }
     }
 }
@@ -457,6 +466,23 @@ impl Stack {
 
     pub fn conn_count(&self) -> usize {
         self.conns.len()
+    }
+
+    /// One line per connection: ports, state, queued bytes, retransmissions.
+    pub fn describe(&self) -> alloc::string::String {
+        use core::fmt::Write;
+        let mut s = alloc::string::String::new();
+        for ((lp, rip, rp), c) in &self.conns {
+            let t = c.tcb.lock();
+            let _ = writeln!(s, "tcp {lp} {}:{rp} {:?} rx={} rtx={} closed_by_user={}", fmt_ip(*rip), t.state, t.rx_len(), t.retransmits, c.user_closed.load(Ordering::Relaxed));
+        }
+        for (p, l) in &self.listeners {
+            let _ = writeln!(s, "listen {p} backlog={}", l.backlog.lock().len());
+        }
+        if let Some(n) = NIC.get() {
+            let _ = writeln!(s, "nic rx={} tx={} tx_dropped={}", n.rx_frames.load(Ordering::Relaxed), n.tx_frames.load(Ordering::Relaxed), n.tx_dropped.load(Ordering::Relaxed));
+        }
+        s
     }
 }
 

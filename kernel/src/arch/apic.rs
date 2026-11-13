@@ -18,6 +18,7 @@ pub const SPURIOUS_VECTOR: u8 = 0xff;
 pub const IPI_RESCHEDULE: u8 = 0xf0;
 pub const IPI_HALT: u8 = 0xf1;
 pub const IPI_TLB: u8 = 0xf2;
+pub const IPI_PROFILE: u8 = 0xf3;
 /// Device interrupts (GSI n) arrive on vector IRQ_BASE + n.
 pub const IRQ_BASE: u8 = 0x30;
 

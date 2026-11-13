@@ -10,6 +10,8 @@ use crate::mm::{frame, paging};
 
 pub const VENDOR: u16 = 0x1af4;
 pub const F_VERSION_1: u64 = 1 << 32;
+/// used_event / avail_event: each side tells the other when it next needs to be notified.
+pub const F_EVENT_IDX: u64 = 1 << 29;
 
 const ACKNOWLEDGE: u8 = 1;
 const DRIVER: u8 = 2;
@@ -198,6 +200,9 @@ pub struct Queue {
     free: Vec<u16>,
     last_used: u16,
     notify_addr: u64,
+    /// Negotiated F_EVENT_IDX (set by the driver after `queue`).
+    pub event_idx: bool,
+    kicked_at: u16,
 }
 
 unsafe impl Send for Queue {}
@@ -224,6 +229,8 @@ impl Queue {
             free: (0..size).rev().collect(),
             last_used: 0,
             notify_addr: 0,
+            event_idx: false,
+            kicked_at: 0,
         })
     }
 
@@ -257,8 +264,33 @@ impl Queue {
         Some(head)
     }
 
-    pub fn notify(&self) {
+    /// Tells the device about new buffers, unless it said it does not need to know yet.
+    pub fn notify(&mut self) {
+        let new = r16(self.avail + 2);
+        if self.event_idx {
+            fence(Ordering::SeqCst);
+            let old = self.kicked_at;
+            let ev = r16(self.used + 4 + 8 * self.size as u64); // avail_event
+            self.kicked_at = new;
+            // vring_need_event(event, new, old)
+            if new.wrapping_sub(ev).wrapping_sub(1) >= new.wrapping_sub(old) {
+                return;
+            }
+        }
         w16(self.notify_addr, self.index);
+    }
+
+    /// Interrupts for used buffers: off (the driver polls) or on again. Returns whether there
+    /// is already something to collect after turning them on.
+    pub fn set_interrupts(&mut self, on: bool) -> bool {
+        let used_event = self.avail + 4 + 2 * self.size as u64;
+        if self.event_idx {
+            w16(used_event, if on { self.last_used } else { self.last_used.wrapping_add(0x7fff) });
+        } else {
+            w16(self.avail, if on { 0 } else { 1 }); // VRING_AVAIL_F_NO_INTERRUPT
+        }
+        fence(Ordering::SeqCst);
+        on && r16(self.used + 2) != self.last_used
     }
 
     /// Takes the next completed chain: (head index, bytes written by the device). Its

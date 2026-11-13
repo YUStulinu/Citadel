@@ -20,4 +20,5 @@ exec qemu-system-x86_64 -machine q35 $ACCEL -smp "${SMP:-4}" -m "${MEM:-1024}" \
   -drive if=none,id=d0,format=raw,file="$IMG" -device virtio-blk-pci,drive=d0,bootindex=1 \
   $NETARGS \
   -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+  ${MONITOR:+-monitor unix:$MONITOR,server,nowait} \
   -display none -serial stdio -no-reboot "$@"

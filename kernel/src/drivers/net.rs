@@ -1,5 +1,9 @@
-//! virtio-net: one receive queue kept full of 2 KiB buffers, one transmit queue. Received
-//! frames go to the network stack's input queue; the stack's thread does the protocol work.
+//! virtio-net: one receive queue kept full of 2 KiB buffers, one transmit queue.
+//!
+//! Receiving works like Linux's NAPI: the interrupt only turns further receive interrupts off
+//! and wakes the network thread, which collects frames until the ring is empty and then turns
+//! interrupts back on. With VIRTIO_RING_F_EVENT_IDX the device also tells us when a transmit
+//! notification is unnecessary, so under load most of those VM exits disappear.
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -35,12 +39,14 @@ struct TxState {
 
 impl VirtioNet {
     fn probe(p: PciDev) -> Option<&'static VirtioNet> {
-        let (dev, feat) = virtio::Device::init(p, F_MAC)?;
+        let (dev, feat) = virtio::Device::init(p, F_MAC | virtio::F_EVENT_IDX)?;
         let vector = pci::alloc_vector();
         let irq = p.msix_route(0, vector);
         let msix = if irq { 0 } else { 0xffff };
-        let rxq = dev.queue(0, QUEUE_MAX, msix)?;
-        let txq = dev.queue(1, QUEUE_MAX, msix)?;
+        let mut rxq = dev.queue(0, QUEUE_MAX, msix)?;
+        let mut txq = dev.queue(1, QUEUE_MAX, msix)?;
+        rxq.event_idx = feat & virtio::F_EVENT_IDX != 0;
+        txq.event_idx = rxq.event_idx;
         let mut mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
         if feat & F_MAC != 0 {
             for (i, m) in mac.iter_mut().enumerate() {
@@ -75,30 +81,40 @@ impl VirtioNet {
         Some(net)
     }
 
-    /// Interrupt: hand received frames to the stack, recycle their buffers, reap sent frames.
+    /// Interrupt: no more receive interrupts until the network thread has emptied the ring.
     fn interrupt(&self) {
+        self.rx.lock().q.set_interrupts(false);
+        crate::net::nic_ready();
+    }
+
+    /// Collects received frames (re-posting their buffers) and reaps sent ones. With `rearm`,
+    /// interrupts are turned back on once nothing is left (re-checking to close the race).
+    pub fn collect(&self, rearm: bool) -> Vec<Vec<u8>> {
         let mut frames = Vec::new();
         {
             let mut rx = self.rx.lock();
-            while let Some((h, len)) = rx.q.pop_used() {
-                if let Some(b) = rx.bufs[h as usize].take() {
-                    let len = (len as usize).min(RX_BUF);
-                    if len > HDR {
-                        frames.push(b[HDR..len].to_vec());
-                    }
-                    let addr = b.as_ptr() as u64;
-                    if let Some(nh) = rx.q.submit(&[(addr, RX_BUF as u32, true)]) {
-                        rx.bufs[nh as usize] = Some(b);
+            loop {
+                while let Some((h, len)) = rx.q.pop_used() {
+                    if let Some(b) = rx.bufs[h as usize].take() {
+                        let len = (len as usize).min(RX_BUF);
+                        if len > HDR {
+                            frames.push(b[HDR..len].to_vec());
+                        }
+                        let addr = b.as_ptr() as u64;
+                        if let Some(nh) = rx.q.submit(&[(addr, RX_BUF as u32, true)]) {
+                            rx.bufs[nh as usize] = Some(b);
+                        }
                     }
                 }
+                rx.q.notify();
+                if !rearm || !rx.q.set_interrupts(true) {
+                    break;
+                }
             }
-            rx.q.notify();
         }
         self.reap_tx();
-        if !frames.is_empty() {
-            self.rx_frames.fetch_add(frames.len() as u64, Ordering::Relaxed);
-            crate::net::receive(frames);
-        }
+        self.rx_frames.fetch_add(frames.len() as u64, Ordering::Relaxed);
+        frames
     }
 
     fn reap_tx(&self) {
@@ -131,10 +147,7 @@ impl VirtioNet {
         }
     }
 
-    /// Polling (when there is no MSI-X, or during boot).
-    pub fn poll(&self) {
-        self.interrupt();
-    }
+
 }
 
 pub fn probe_all() -> Option<&'static VirtioNet> {

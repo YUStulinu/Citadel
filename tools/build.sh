@@ -40,6 +40,7 @@ for f in "$OUT"/user/*; do
   esac
 done
 cp -r "$SRC/rootfs/." "$R/"
+cp -r "$SRC/disk/www" "$R/www" # also in memory, for benchmarks that should not touch a disk
 "$OUT/tools/mkinitrd" "$R" "$OUT/initrd.cpio"
 
 echo "== disk image"

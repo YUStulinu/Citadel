@@ -35,6 +35,9 @@ const RTO_INITIAL: u64 = 1000 * MS;
 const RTO_MIN: u64 = 200 * MS;
 const RTO_MAX: u64 = 60_000 * MS;
 const TIME_WAIT: u64 = 2000 * MS;
+/// Delayed ACK (RFC 1122 4.2.3.2): an ACK for in-order data waits this long for data to ride on,
+/// unless a second full segment arrives first.
+const DELACK: u64 = 20 * MS;
 const MAX_RETRIES: u32 = 12;
 pub const BUFFER: usize = 64 * 1024;
 
@@ -75,6 +78,8 @@ pub struct Tcb {
     retries: u32,
     dup_acks: u32,
     ack_now: bool,
+    ack_at: Option<u64>,
+    unacked_segs: u32,
     adv_wnd: u32,
     time_wait_end: u64,
     /// Why the connection ended abnormally (ECONNREFUSED, ECONNRESET, ETIMEDOUT).
@@ -115,6 +120,8 @@ impl Tcb {
             retries: 0,
             dup_acks: 0,
             ack_now: false,
+            ack_at: None,
+            unacked_segs: 0,
             adv_wnd: BUFFER as u32,
             time_wait_end: 0,
             error: None,
@@ -153,6 +160,8 @@ impl Tcb {
         self.out.push(Segment { sport: self.local_port, dport: self.remote_port, seq, ack, flags, window, mss, payload });
         if flags & ACK != 0 {
             self.ack_now = false;
+            self.ack_at = None;
+            self.unacked_segs = 0;
         }
     }
 
@@ -173,7 +182,10 @@ impl Tcb {
     pub fn next_timer(&self) -> Option<u64> {
         match self.state {
             State::TimeWait => Some(self.time_wait_end),
-            _ => self.rtx_at,
+            _ => match (self.rtx_at, self.ack_at) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            },
         }
     }
 
@@ -503,17 +515,33 @@ impl Tcb {
                 seq = self.rcv_nxt;
             }
             if !data.is_empty() {
-                if seq == self.rcv_nxt {
+                if seq == self.rcv_nxt && self.ooo.is_empty() {
+                    let room = BUFFER - self.rx.len();
+                    let n = data.len().min(room);
+                    self.rx.extend(&data[..n]);
+                    self.rcv_nxt = self.rcv_nxt.wrapping_add(n as u32);
+                    self.unacked_segs += 1;
+                    if n < data.len() || self.unacked_segs >= 2 {
+                        self.ack_now = true;
+                    } else if self.ack_at.is_none() {
+                        self.ack_at = Some(now + DELACK);
+                    }
+                } else if seq == self.rcv_nxt {
                     let room = BUFFER - self.rx.len();
                     let n = data.len().min(room);
                     self.rx.extend(&data[..n]);
                     self.rcv_nxt = self.rcv_nxt.wrapping_add(n as u32);
                     self.drain_ooo();
-                } else if self.ooo.len() < 64 {
-                    self.ooo.entry(seq).or_insert_with(|| data.to_vec());
+                    self.ack_now = true; // a hole was filled: tell the sender at once
+                } else {
+                    if self.ooo.len() < 64 {
+                        self.ooo.entry(seq).or_insert_with(|| data.to_vec());
+                    }
+                    self.ack_now = true; // out of order: duplicate ACK for fast retransmit
                 }
+            } else {
+                self.ack_now = true; // old data: the sender missed our ACK
             }
-            self.ack_now = true;
         }
         if seg.flags & FIN != 0 && !self.peer_fin && seg.seq.wrapping_add(seg.payload.len() as u32) == self.rcv_nxt {
             self.peer_fin = true;
@@ -569,6 +597,10 @@ impl Tcb {
                 self.state = State::Closed;
             }
             return;
+        }
+        if self.ack_at.is_some_and(|t| now >= t) {
+            self.ack_now = true;
+            self.output(now);
         }
         let Some(at) = self.rtx_at else { return };
         if now < at {

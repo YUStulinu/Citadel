@@ -27,6 +27,8 @@ enum Gen {
     Mounts,
     Version,
     Sched,
+    Profile,
+    Net,
     PidStat(u32),
     PidStatus(u32),
     PidMaps(u32),
@@ -100,6 +102,13 @@ fn generate(g: Gen) -> KResult<String> {
         }
         Gen::Version => {
             let _ = writeln!(s, "Citadel version {} #1 SMP", env!("CARGO_PKG_VERSION"));
+        }
+        Gen::Profile => s = crate::profile::report(),
+        Gen::Net => {
+            let st = &crate::net::STATS;
+            let g = |i: usize| st[i].load(Ordering::Relaxed);
+            let _ = writeln!(s, "frames_in {} frames_out {} loopback {} dropped {} resets {} arp_requests {} connections {}", g(0), g(1), g(2), g(3), g(4), g(5), crate::net::stack().conn_count());
+            s.push_str(&crate::net::stack().describe());
         }
         Gen::Sched => {
             let _ = writeln!(s, "cpu queued switches idle_ms ticks");
@@ -230,7 +239,9 @@ impl Inode for PidDir {
 
 pub struct ProcRoot;
 
-const ROOT_FILES: [(&str, Gen); 7] = [
+const ROOT_FILES: [(&str, Gen); 9] = [
+    ("profile", Gen::Profile),
+    ("net", Gen::Net),
     ("meminfo", Gen::MemInfo),
     ("uptime", Gen::Uptime),
     ("stat", Gen::CpuStat),
