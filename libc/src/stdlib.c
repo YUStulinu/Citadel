@@ -533,3 +533,6 @@ char *mktemp(char *t) {
     unlink(t);
     return t;
 }
+
+intmax_t strtoimax(const char *restrict s, char **restrict end, int base) { return strtoll(s, end, base); }
+uintmax_t strtoumax(const char *restrict s, char **restrict end, int base) { return strtoull(s, end, base); }

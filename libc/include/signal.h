@@ -1,5 +1,6 @@
 #ifndef _SIGNAL_H
 #define _SIGNAL_H
+#include <stddef.h>
 #include <sys/types.h>
 #define SIGHUP 1
 #define SIGINT 2
@@ -77,4 +78,30 @@ int sigismember(const sigset_t *s, int sig);
 int kill(pid_t pid, int sig);
 int killpg(pid_t pg, int sig);
 int raise(int sig);
+#define SIGPOLL SIGIO
+#define SA_NOCLDWAIT 2
+#define SS_ONSTACK 1
+#define SS_DISABLE 2
+#define MINSIGSTKSZ 2048
+#define SIGSTKSZ 8192
+#define CLD_EXITED 1
+#define CLD_KILLED 2
+#define CLD_DUMPED 3
+#define CLD_TRAPPED 4
+#define CLD_STOPPED 5
+#define CLD_CONTINUED 6
+#define SI_USER 0
+#define SI_QUEUE -1
+typedef struct {
+    void *ss_sp;
+    int ss_flags;
+    size_t ss_size;
+} stack_t;
+int sigaltstack(const stack_t *restrict ss, stack_t *restrict old);
+int sigpause(int sig);
+int sighold(int sig);
+int sigrelse(int sig);
+int sigignore(int sig);
+sighandler_t sigset(int sig, sighandler_t h);
+int sigwait(const sigset_t *restrict set, int *restrict sig);
 #endif

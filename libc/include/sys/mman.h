@@ -19,4 +19,11 @@ int mprotect(void *addr, size_t len, int prot);
 #define MADV_HUGEPAGE 14
 #define MADV_NOHUGEPAGE 15
 int madvise(void *addr, size_t len, int advice);
+#define MS_ASYNC 1
+#define MS_INVALIDATE 2
+#define MS_SYNC 4
+#define MAP_NORESERVE 0x4000
+int msync(void *addr, size_t len, int flags);
+int mlock(const void *addr, size_t len);
+int munlock(const void *addr, size_t len);
 #endif

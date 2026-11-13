@@ -1,0 +1,3 @@
+{
+  "recommendations": ["rust-lang.rust-analyzer", "ziglang.vscode-zig", "ms-vscode.cpptools", "dbaeumer.vscode-eslint"]
+}

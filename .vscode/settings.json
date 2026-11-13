@@ -1,0 +1,11 @@
+{
+  "rust-analyzer.linkedProjects": ["kernel/Cargo.toml", "kcore/Cargo.toml"],
+  "rust-analyzer.cargo.allTargets": false,
+  "rust-analyzer.check.allTargets": false,
+  "files.associations": { "*.S": "asm", "linker.ld": "linkerscript" },
+  "files.exclude": { "build": true, "third_party": true, "web/node_modules": true, "web/dist": true, "**/.zig-cache": true },
+  "search.exclude": { "build": true, "third_party": true, "web/node_modules": true, "web/dist": true },
+  "editor.rulers": [130],
+  "C_Cpp.default.includePath": ["${workspaceFolder}/libc/include"],
+  "C_Cpp.default.compilerArgs": ["-nostdlibinc"]
+}

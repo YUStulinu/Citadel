@@ -41,6 +41,7 @@ pub const NSIG: usize = 65;
 
 pub const SIG_DFL: u64 = 0;
 pub const SIG_IGN: u64 = 1;
+pub const SA_ONSTACK: u64 = 0x0800_0000;
 pub const SA_NODEFER: u64 = 0x4000_0000;
 pub const SA_RESETHAND: u64 = 0x8000_0000;
 pub const SA_RESTORER: u64 = 0x0400_0000;
@@ -63,11 +64,13 @@ pub struct SigState {
     pub blocked: u64,
     /// sigsuspend: the mask to restore when the handler returns.
     pub restore_mask: Option<u64>,
+    /// sigaltstack: (base, size) of the alternate signal stack.
+    pub alt_stack: Option<(u64, u64)>,
 }
 
 impl Default for SigState {
     fn default() -> Self {
-        SigState { actions: [SigAction::default(); NSIG], pending: 0, blocked: 0, restore_mask: None }
+        SigState { actions: [SigAction::default(); NSIG], pending: 0, blocked: 0, restore_mask: None, alt_stack: None }
     }
 }
 
@@ -76,9 +79,11 @@ impl SigState {
         self.actions = parent.actions;
         self.blocked = parent.blocked;
         self.pending = 0;
+        self.alt_stack = parent.alt_stack;
     }
     /// exec: handlers go back to the default; ignored signals stay ignored.
     pub fn reset_on_exec(&mut self) {
+        self.alt_stack = None;
         for a in self.actions.iter_mut() {
             if a.handler != SIG_IGN {
                 *a = SigAction::default();
@@ -232,8 +237,13 @@ pub fn deliver_pending(f: &mut TrapFrame) {
         drop(p);
         proc::exit(sig as i32 | if dumps_core(sig) { 0x80 } else { 0 });
     }
-    // Build the frame below the interrupted stack (skipping the 128-byte red zone).
-    let mut sp = (f.rsp - 128) & !15;
+    // Build the frame on the alternate stack if the action asks for it and we are not on it
+    // already, else below the interrupted stack (skipping the 128-byte red zone).
+    let alt = p.sig.lock().alt_stack;
+    let mut sp = match alt {
+        Some((base, size)) if action.flags & SA_ONSTACK != 0 && !(base <= f.rsp && f.rsp < base + size) => (base + size) & !15,
+        _ => (f.rsp - 128) & !15,
+    };
     sp -= core::mem::size_of::<UContext>() as u64;
     let uc_at = sp & !15;
     sp = uc_at - core::mem::size_of::<SigInfo>() as u64;

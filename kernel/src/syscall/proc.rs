@@ -272,3 +272,47 @@ pub fn sched_getaffinity(pid: u32, len: usize, mask_ptr: u64) -> KResult<u64> {
     crate::user::copy_out(mask_ptr, &mask.to_le_bytes())?;
     Ok(8)
 }
+
+/// sigaltstack(ss, old): the alternate stack for handlers installed with SA_ONSTACK.
+pub fn sigaltstack(new: u64, old: u64, user_rsp: u64) -> KResult<u64> {
+    const SS_ONSTACK: u32 = 1;
+    const SS_DISABLE: u32 = 2;
+    const MINSIGSTKSZ: u64 = 2048;
+    let p = proc::current();
+    let cur = p.sig.lock().alt_stack;
+    let on = cur.is_some_and(|(b, s)| b <= user_rsp && user_rsp < b + s);
+    if old != 0 {
+        let mut b = [0u8; 24];
+        let (base, size, flags) = match cur {
+            Some((base, size)) => (base, size, if on { SS_ONSTACK } else { 0 }),
+            None => (0, 0, SS_DISABLE),
+        };
+        b[0..8].copy_from_slice(&base.to_le_bytes());
+        b[8..12].copy_from_slice(&flags.to_le_bytes());
+        b[16..24].copy_from_slice(&size.to_le_bytes());
+        user::copy_out(old, &b)?;
+    }
+    if new != 0 {
+        let mut b = [0u8; 24];
+        user::copy_in(new, &mut b)?;
+        let base = u64::from_le_bytes(b[0..8].try_into().unwrap());
+        let flags = u32::from_le_bytes(b[8..12].try_into().unwrap());
+        let size = u64::from_le_bytes(b[16..24].try_into().unwrap());
+        if on {
+            return Err(EPERM);
+        }
+        if flags & !(SS_DISABLE | SS_ONSTACK) != 0 {
+            return Err(EINVAL);
+        }
+        let mut s = p.sig.lock();
+        if flags & SS_DISABLE != 0 {
+            s.alt_stack = None;
+        } else {
+            if size < MINSIGSTKSZ {
+                return Err(ENOMEM);
+            }
+            s.alt_stack = Some((base, size));
+        }
+    }
+    Ok(0)
+}

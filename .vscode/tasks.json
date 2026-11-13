@@ -1,0 +1,10 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "build image", "type": "shell", "command": "sh tools/build.sh", "group": "build", "problemMatcher": [] },
+    { "label": "boot (interactive)", "type": "shell", "command": "NET=1 sh tools/qemu-run.sh build/citadel.img", "problemMatcher": [] },
+    { "label": "kcore tests", "type": "shell", "command": "cd kcore && cargo test", "group": "test", "problemMatcher": ["$rustc"] },
+    { "label": "smoke test in QEMU", "type": "shell", "command": "sh tools/guest-test.sh 120 /bin/sh /tests/smoke.sh", "group": "test", "problemMatcher": [] },
+    { "label": "web console", "type": "shell", "command": "cd web && npm run build && NET=1 npm start", "problemMatcher": [] }
+  ]
+}

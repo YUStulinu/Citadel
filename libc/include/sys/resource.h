@@ -7,6 +7,11 @@ struct rusage { struct timeval ru_utime, ru_stime; long ru_maxrss, ru_ixrss, ru_
 #define RLIM_INFINITY (~0UL)
 #define RLIMIT_STACK 3
 #define RLIMIT_NOFILE 7
+#define RLIMIT_CPU 0
+#define RLIMIT_FSIZE 1
+#define RLIMIT_DATA 2
+#define RLIMIT_CORE 4
+#define RLIMIT_AS 9
 #define RUSAGE_SELF 0
 #define RUSAGE_CHILDREN (-1)
 int getrlimit(int r, struct rlimit *l);

@@ -1,0 +1,40 @@
+# Open POSIX Test Suite interfaces built and run on Citadel and on Linux (processes, signals,
+# memory, clocks and time, and some libc functions). Thread, message-queue, semaphore, timer and
+# asynchronous-I/O interfaces are left out: Citadel has no threads or those IPC objects.
+access
+asctime
+clock
+clock_getres
+clock_gettime
+clock_nanosleep
+ctime
+difftime
+fork
+fsync
+getpid
+gmtime
+kill
+killpg
+localtime
+mktime
+mmap
+munmap
+nanosleep
+raise
+sched_yield
+sigaction
+sigaddset
+sigdelset
+sigemptyset
+sigfillset
+sigismember
+signal
+sigpending
+sigprocmask
+sigsuspend
+strchr
+strcpy
+strftime
+strlen
+strncpy
+time

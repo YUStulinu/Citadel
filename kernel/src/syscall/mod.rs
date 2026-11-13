@@ -101,6 +101,7 @@ pub extern "C" fn dispatch(f: &mut TrapFrame) {
         12 => mm::brk(a[0]),
         25 => Err(ENOMEM), // mremap
         28 => mm::madvise(a[0], a[1], a[2] as u32),
+        26 => mm::msync(a[0], a[1], a[2] as u32),
         // signals
         13 => proc::rt_sigaction(a[0] as u32, a[1], a[2]),
         14 => proc::rt_sigprocmask(a[0] as u32, a[1], a[2]),
@@ -108,7 +109,7 @@ pub extern "C" fn dispatch(f: &mut TrapFrame) {
         62 => crate::signal::kill(a[0] as i64, a[1] as u32).map(|_| 0),
         127 => proc::rt_sigpending(a[0]),
         130 => proc::rt_sigsuspend(a[0]),
-        131 => Ok(0), // sigaltstack
+        131 => proc::sigaltstack(a[0], a[1], f.rsp),
         200 | 234 => crate::signal::kill(a[0] as i64, a[1] as u32).map(|_| 0), // tkill/tgkill
         // processes
         24 => {

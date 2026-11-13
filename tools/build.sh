@@ -21,6 +21,7 @@ echo "== libc and user programs"
 sh "$SRC/libc/build.sh" "$OUT/libc" >/dev/null
 sh "$SRC/user/build.sh" "$OUT/user" >/dev/null
 if [ -d "$SRC/third_party/lua" ]; then sh "$SRC/user/lua/build.sh" "$OUT/user" >/dev/null; fi
+if [ -d "$SRC/third_party/openposix" ]; then sh "$SRC/user/posix/build.sh" "$OUT/user"; fi
 echo "== image tools"
 mkdir -p "$OUT/tools"
 zig build-exe -O ReleaseSafe "$SRC/tools/mkinitrd.zig" -femit-bin="$OUT/tools/mkinitrd" $ZCACHE
@@ -42,6 +43,7 @@ for f in "$OUT"/user/*; do
 done
 cp -r "$SRC/rootfs/." "$R/"
 cp -r "$SRC/disk/www" "$R/www" # also in memory, for benchmarks that should not touch a disk
+if [ -d "$OUT/user/posix" ]; then cp -r "$OUT/user/posix" "$R/posix"; fi
 "$OUT/tools/mkinitrd" "$R" "$OUT/initrd.cpio"
 
 echo "== disk image"

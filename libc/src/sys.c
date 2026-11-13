@@ -253,6 +253,14 @@ long sysconf(int name) {
     case _SC_OPEN_MAX: return 1024;
     case _SC_NPROCESSORS_ONLN:
     case _SC_NPROCESSORS_CONF: return 4;
+    case _SC_ARG_MAX: return 131072;
+    case _SC_CHILD_MAX: return 1024;
+    case _SC_VERSION: return 200809L;
+    case _SC_CPUTIME:
+    case _SC_MONOTONIC_CLOCK:
+    case _SC_TIMERS:
+    case _SC_REALTIME_SIGNALS: return 200809L;
+    case _SC_THREAD_CPUTIME: return -1;
     }
     errno = EINVAL;
     return -1;
@@ -353,3 +361,64 @@ int sigdelset(sigset_t *s, int n) {
 }
 int sigismember(const sigset_t *s, int n) { return n > 0 && n < NSIG && (*s >> (n - 1)) & 1; }
 int raise(int sig) { return kill(getpid(), sig); }
+
+pid_t setpgrp(void) { return setpgid(0, 0); }
+int msync(void *a, size_t n, int f) { return __ret(__sc3(26, a, n, f)); }
+int mlock(const void *a, size_t n) { (void)a; (void)n; return 0; }
+int munlock(const void *a, size_t n) { (void)a; (void)n; return 0; }
+
+int sigaltstack(const stack_t *restrict ss, stack_t *restrict old) { return __ret(__sc2(131, ss, old)); }
+
+/* The XSI signal calls, in terms of the POSIX ones. */
+int sighold(int sig) {
+    sigset_t s;
+    sigemptyset(&s);
+    sigaddset(&s, sig);
+    return sigprocmask(SIG_BLOCK, &s, NULL);
+}
+int sigrelse(int sig) {
+    sigset_t s;
+    sigemptyset(&s);
+    sigaddset(&s, sig);
+    return sigprocmask(SIG_UNBLOCK, &s, NULL);
+}
+int sigignore(int sig) { return signal(sig, SIG_IGN) == SIG_ERR ? -1 : 0; }
+int sigpause(int sig) {
+    sigset_t s;
+    sigprocmask(SIG_SETMASK, NULL, &s);
+    sigdelset(&s, sig);
+    return sigsuspend(&s);
+}
+sighandler_t sigset(int sig, sighandler_t h) {
+    sigset_t s, old;
+    sigemptyset(&s);
+    sigaddset(&s, sig);
+    if (h == (sighandler_t)2) { /* SIG_HOLD */
+        sigprocmask(SIG_BLOCK, &s, &old);
+        return sigismember(&old, sig) ? (sighandler_t)2 : SIG_DFL;
+    }
+    sigprocmask(SIG_UNBLOCK, &s, &old);
+    sighandler_t prev = signal(sig, h);
+    return sigismember(&old, sig) ? (sighandler_t)2 : prev;
+}
+/* sigwait: block in sigsuspend with only `set` allowed, collect the signal with a handler. */
+static volatile int sigwait_got;
+static void sigwait_catch(int sig) { sigwait_got = sig; }
+int sigwait(const sigset_t *restrict set, int *restrict sig) {
+    struct sigaction sa, old[65];
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = sigwait_catch;
+    sigfillset(&sa.sa_mask);
+    for (int i = 1; i < 65; i++)
+        if (sigismember(set, i)) sigaction(i, &sa, &old[i]);
+    sigset_t mask;
+    sigfillset(&mask);
+    for (int i = 1; i < 65; i++)
+        if (sigismember(set, i)) sigdelset(&mask, i);
+    sigwait_got = 0;
+    while (!sigwait_got) sigsuspend(&mask);
+    for (int i = 1; i < 65; i++)
+        if (sigismember(set, i)) sigaction(i, &old[i], NULL);
+    *sig = sigwait_got;
+    return 0;
+}

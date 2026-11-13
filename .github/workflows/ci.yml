@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  ZIG_VERSION: 0.14.1
+  CARGO_TERM_COLOR: always
+
+jobs:
+  kcore:
+    name: kcore (allocators, ELF, cpio, ext2 vs e2fsck, TCP over a lossy link)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y e2fsprogs
+      - run: cd kcore && cargo test --release
+
+  libc:
+    name: libc (printf/strtod/scanf against glibc, official Lua 5.4 tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Build the C library
+        run: sh libc/build.sh build/libc
+      - name: Formatting and parsing identical to glibc
+        run: |
+          sh user/build.sh build/user
+          gcc -O2 -o build/fmt_glibc user/tests/fmtcheck.c -lm
+          build/fmt_glibc > build/glibc.txt
+          build/user/fmtcheck > build/citadel.txt
+          diff build/glibc.txt build/citadel.txt && echo "identical: $(wc -l < build/citadel.txt) lines"
+      - name: Lua 5.4 built against this libc passes its official test suite
+        run: |
+          sh tools/fetch-lua.sh
+          sh user/lua/build.sh build/user
+          cd third_party/lua-tests && ../../build/user/lua -e "_U=true" all.lua
+
+  web:
+    name: web console (TypeScript)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: cd web && npm install --no-audit --no-fund && npm run build && npm test
+
+  system:
+    name: whole system in QEMU (boot, shell, disk, network, Lua, POSIX)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 ovmf e2fsprogs dosfstools gdisk curl
+          rustup target add x86_64-unknown-none
+          # Let QEMU use KVM when the runner exposes it (falls back to emulation otherwise).
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+            sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          fi
+      - name: Third-party test inputs (Lua 5.4 from lua.org, Open POSIX Test Suite from LTP)
+        run: sh tools/fetch-lua.sh && sh tools/fetch-posix.sh
+      - name: Build the image
+        run: OUT=build sh tools/build.sh
+      - name: Disk image is valid (GPT, FAT32, ext2)
+        run: |
+          sgdisk -v build/citadel.img
+          dd if=build/citadel.img of=build/esp.img bs=1M skip=1 count=64 status=none
+          fsck.fat -n build/esp.img
+          dd if=build/citadel.img of=build/root.img bs=1M skip=65 count=128 status=none
+          e2fsck -fn build/root.img
+      - name: Shell and processes
+        run: sh tools/guest-test.sh 300 /bin/sh /tests/smoke.sh
+      - name: ext2 on virtio-blk, then e2fsck on what the kernel wrote
+        run: |
+          sh tools/guest-test.sh 300 /bin/sh /tests/disk.sh
+          dd if=build/citadel.img of=build/root.img bs=1M skip=65 count=128 status=none
+          e2fsck -fn build/root.img
+      - name: TCP/IP over loopback
+        run: sh tools/guest-test.sh 300 /tests/nettest
+      - name: HTTP from the host through virtio-net
+        run: |
+          OUT=build CMDLINE="console=ttyS0 init=/bin/init -- /bin/httpd -q" sh tools/build.sh > /dev/null
+          NET=1 timeout 120 sh tools/qemu-run.sh build/citadel.img > build/http.log 2>&1 &
+          for i in $(seq 1 120); do curl -s -m 2 -o /dev/null http://127.0.0.1:8080/ && break; sleep 1; done
+          curl -sf http://127.0.0.1:8080/ | grep "Served by Citadel"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/missing)" = 404
+          gcc -O2 -o build/httpload tools/httpload.c && build/httpload 127.0.0.1 8080 /index.html 8 5
+      - name: Official Lua 5.4 test suite on Citadel
+        run: sh tools/guest-test.sh 900 /bin/sh /tests/luatests.sh
+      - name: Open POSIX Test Suite subset on Citadel
+        run: |
+          sh tools/guest-test.sh 1800 /tests/posixrun /posix 20 | tee build/posix.txt
+          grep "posixrun:" build/posix.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: guest-logs
+          path: build/*.log

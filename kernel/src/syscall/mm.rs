@@ -186,3 +186,21 @@ pub fn madvise(addr: u64, len: u64, advice: u32) -> KResult<u64> {
     }
     Ok(0)
 }
+
+/// msync: private mappings have nothing to write back; the range must be mapped.
+pub fn msync(addr: u64, len: u64, flags: u32) -> KResult<u64> {
+    const MS_ASYNC: u32 = 1;
+    const MS_SYNC: u32 = 4;
+    if addr & 0xfff != 0 || flags & !7 != 0 || (flags & MS_ASYNC != 0 && flags & MS_SYNC != 0) {
+        return Err(EINVAL);
+    }
+    let p = crate::proc::current();
+    let mm = p.mm.lock();
+    let end = addr.saturating_add(len);
+    let mut a = addr;
+    while a < end {
+        let v = mm.find(a).ok_or(ENOMEM)?;
+        a = v.end;
+    }
+    Ok(0)
+}

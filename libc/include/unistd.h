@@ -1,6 +1,7 @@
 #ifndef _UNISTD_H
 #define _UNISTD_H
 #include <stddef.h>
+#include <limits.h>
 #include <sys/types.h>
 #define STDIN_FILENO 0
 #define STDOUT_FILENO 1
@@ -18,6 +19,21 @@
 #define _SC_OPEN_MAX 4
 #define _SC_NPROCESSORS_ONLN 84
 #define _SC_NPROCESSORS_CONF 83
+#define _SC_ARG_MAX 0
+#define _SC_CHILD_MAX 1
+#define _SC_VERSION 29
+#define _SC_CPUTIME 138
+#define _SC_THREAD_CPUTIME 139
+#define _SC_MONOTONIC_CLOCK 149
+#define _SC_TIMERS 11
+#define _SC_REALTIME_SIGNALS 9
+#define _POSIX_VERSION 200809L
+#define _POSIX_TIMERS 200809L
+#define _POSIX_MONOTONIC_CLOCK 200809L
+#define _POSIX_CPUTIME 200809L
+#define _POSIX_MAPPED_FILES 200809L
+#define _POSIX_FSYNC 200809L
+pid_t setpgrp(void);
 #define _POSIX_VERSION 200809L
 extern char **environ;
 extern char *optarg;
