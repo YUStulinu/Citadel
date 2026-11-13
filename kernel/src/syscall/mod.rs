@@ -75,7 +75,11 @@ pub extern "C" fn dispatch(f: &mut TrapFrame) {
         95 => fs::umask(a[0] as u32),
         133 => fs::mknodat(fs::AT_FDCWD, a[0], a[1] as u32),
         137 | 138 => fs::statfs(a[1]),
-        161 | 162 => Ok(0), // chroot (not supported, accepted), sync
+        161 => Ok(0), // chroot (not supported, accepted)
+        162 => {
+            crate::fs::ext2::sync_all();
+            Ok(0)
+        }
         257 => fs::openat(a[0] as i64, a[1], a[2] as u32, a[3] as u32),
         258 => fs::mkdirat(a[0] as i64, a[1], a[2] as u32),
         259 => fs::mknodat(a[0] as i64, a[1], a[2] as u32),

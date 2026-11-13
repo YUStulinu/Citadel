@@ -820,6 +820,11 @@ static int cmd_poweroff(int argc, char **argv) {
     return 1;
 }
 
+static int cmd_sync(int argc, char **argv) {
+    sync();
+    return 0;
+}
+
 static int cmd_true(int argc, char **argv) { return 0; }
 static int cmd_false(int argc, char **argv) { return 1; }
 
@@ -831,7 +836,7 @@ static const struct {
     {"dirname", cmd_dirname},   {"echo", cmd_echo}, {"env", cmd_env},           {"false", cmd_false}, {"grep", cmd_grep},
     {"head", cmd_head},         {"kill", cmd_kill}, {"ln", cmd_ln},             {"ls", cmd_ls},       {"mkdir", cmd_mkdir},
     {"mv", cmd_mv},             {"poweroff", cmd_poweroff}, {"ps", cmd_ps},     {"rm", cmd_rm},       {"rmdir", cmd_rmdir},
-    {"seq", cmd_seq},           {"sleep", cmd_sleep}, {"sort", cmd_sort},       {"stat", cmd_stat},   {"tail", cmd_tail},
+    {"seq", cmd_seq},           {"sleep", cmd_sleep}, {"sort", cmd_sort},       {"stat", cmd_stat},   {"sync", cmd_sync},   {"tail", cmd_tail},
     {"tee", cmd_tee},           {"touch", cmd_touch}, {"true", cmd_true},       {"uname", cmd_uname}, {"uniq", cmd_uniq},
     {"wc", cmd_wc},             {"yes", cmd_yes},
 };

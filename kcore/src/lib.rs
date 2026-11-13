@@ -2,8 +2,11 @@
 //! host with `cargo test` lives here, and the kernel calls into it.
 #![cfg_attr(not(test), no_std)]
 
+extern crate alloc;
+
 pub mod buddy;
 pub mod cpio;
 pub mod elf;
 pub mod errno;
+pub mod ext2;
 pub mod path;

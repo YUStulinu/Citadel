@@ -122,3 +122,54 @@ impl<T> Default for Once<T> {
         Self::new()
     }
 }
+
+/// A lock whose waiters sleep (for long critical sections that do disk I/O, like a file
+/// system's metadata updates). Interrupts stay enabled while it is held.
+pub struct Mutex<T> {
+    locked: core::sync::atomic::AtomicBool,
+    wq: crate::sched::WaitQueue,
+    value: UnsafeCell<T>,
+}
+
+unsafe impl<T: Send> Sync for Mutex<T> {}
+unsafe impl<T: Send> Send for Mutex<T> {}
+
+pub struct MutexGuard<'a, T> {
+    m: &'a Mutex<T>,
+}
+
+impl<T> Mutex<T> {
+    pub const fn new(v: T) -> Self {
+        Mutex { locked: core::sync::atomic::AtomicBool::new(false), wq: crate::sched::WaitQueue::new(), value: UnsafeCell::new(v) }
+    }
+
+    fn try_take(&self) -> bool {
+        self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
+    }
+
+    pub fn lock(&self) -> MutexGuard<'_, T> {
+        // Signals do not interrupt this wait: callers expect to get the lock.
+        while !self.wq.wait_until(|| self.try_take()) {}
+        MutexGuard { m: self }
+    }
+}
+
+impl<T> Drop for MutexGuard<'_, T> {
+    fn drop(&mut self) {
+        self.m.locked.store(false, Ordering::Release);
+        self.m.wq.wake_one();
+    }
+}
+
+impl<T> Deref for MutexGuard<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        unsafe { &*self.m.value.get() }
+    }
+}
+
+impl<T> DerefMut for MutexGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        unsafe { &mut *self.m.value.get() }
+    }
+}

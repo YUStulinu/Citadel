@@ -7,6 +7,7 @@ extern crate alloc;
 pub mod acpi;
 pub mod arch;
 pub mod boot;
+pub mod drivers;
 pub mod exec;
 pub mod fs;
 pub mod interrupts;
@@ -119,6 +120,13 @@ extern "C" fn kmain(boot_info_phys: u64) -> ! {
     fs::mount("/tmp", fs::tmpfs::TmpInode::new_root(), "tmpfs");
     fs::mount("/proc", fs::procfs::ProcRoot::new(), "proc");
 
+    // Devices: disks (an ext2 partition is mounted at /mnt).
+    drivers::pci::init();
+    drivers::blk::init();
+    if let Some(d) = fs::ext2::mount_first("/mnt") {
+        kprintln!("citadel: mounted {d} on /mnt");
+    }
+
     let init = bi.arg("init").unwrap_or("/bin/init");
     // Words after "--" on the command line become init's arguments.
     let mut argv: alloc::vec::Vec<&str> = alloc::vec![init];
@@ -151,6 +159,7 @@ fn apic_halt_others() {
 /// Power the machine off. Under QEMU the isa-debug-exit device (port 0xf4) ends the emulator
 /// with status (code << 1) | 1; otherwise ACPI S5 through QEMU's PM1a control port.
 pub fn poweroff(code: u32) -> ! {
+    fs::ext2::sync_all();
     arch::port::outl(0xf4, code);
     arch::port::outw(0x604, 0x2000);
     arch::port::outw(0xb004, 0x2000);

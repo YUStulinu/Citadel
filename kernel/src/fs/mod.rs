@@ -2,6 +2,7 @@
 //! sockets) behind one trait, open file descriptions, a mount table and path resolution.
 pub mod devfs;
 pub mod pipe;
+pub mod ext2;
 pub mod procfs;
 pub mod tmpfs;
 
