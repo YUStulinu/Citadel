@@ -130,8 +130,11 @@ pub extern "C" fn dispatch(f: &mut TrapFrame) {
         98 => proc::getrusage(a[1]),
         99 => proc::sysinfo(a[0]),
         100 => time::times(a[0]),
-        102 | 104 | 107 | 108 => Ok(0), // getuid, getgid, geteuid, getegid: everyone is root
-        105 | 106 | 116 | 117 | 119 => Ok(0), // setuid, setgid, setgroups, setresuid, setresgid
+        102 => Ok(crate::proc::current().uid.load(Ordering::Relaxed) as u64),
+        107 => Ok(crate::proc::current().euid.load(Ordering::Relaxed) as u64),
+        104 | 108 => Ok(0), // getgid, getegid
+        105 => proc::setuid(a[0] as u32),
+        106 | 116 | 117 | 119 => Ok(0), // setgid, setgroups, setresuid, setresgid
         115 => Ok(0),                         // getgroups: none
         109 => proc::setpgid(a[0] as u32, a[1] as u32),
         110 => Ok(crate::proc::current().ppid.load(Ordering::Relaxed) as u64),
@@ -153,8 +156,8 @@ pub extern "C" fn dispatch(f: &mut TrapFrame) {
         96 => time::gettimeofday(a[0]),
         201 => time::time(a[0]),
         228 => time::clock_gettime(a[0] as u32, a[1]),
-        229 => time::clock_getres(a[1]),
-        230 => time::clock_nanosleep(a[0] as u32, a[1] as u32, a[2]),
+        229 => time::clock_getres(a[0] as u32, a[1]),
+        230 => time::clock_nanosleep(a[0] as u32, a[1] as u32, a[2], a[3]),
         // sockets
         41..=55 | 288 | 299 => crate::net::syscall(nr, &a),
         // Citadel-specific: 1000 = profiler control, 1001 = power off with an exit code

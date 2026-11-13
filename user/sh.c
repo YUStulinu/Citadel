@@ -1310,6 +1310,10 @@ static int call_function(Func *f, int argc, char **argv) {
 /* ------------------------------------------------------------------ execution */
 
 static int status_of(int st) {
+    if (WIFSTOPPED(st)) {
+        fprintf(stderr, "\nStopped (continue it with kill -CONT)\n");
+        return 128 + WSTOPSIG(st);
+    }
     if (WIFEXITED(st)) return WEXITSTATUS(st);
     if (WIFSIGNALED(st)) {
         int sig = WTERMSIG(st);
@@ -1337,7 +1341,7 @@ static void fg_setup(pid_t pid, pid_t pgid) {
 
 static int fg_wait(pid_t pid) {
     int st;
-    while (waitpid(pid, &st, 0) < 0)
+    while (waitpid(pid, &st, interactive ? WUNTRACED : 0) < 0)
         if (errno != EINTR) return 127;
     if (interactive) tcsetpgrp(0, shell_pgid);
     return status_of(st);
@@ -1512,7 +1516,7 @@ static int exec_pipeline(Node *n) {
     int status = 0;
     for (int i = 0; i < np; i++) {
         int st;
-        while (waitpid(pids[i], &st, 0) < 0 && errno == EINTR) {}
+        while (waitpid(pids[i], &st, interactive ? WUNTRACED : 0) < 0 && errno == EINTR) {}
         if (i == np - 1) status = status_of(st);
     }
     if (interactive) tcsetpgrp(0, shell_pgid);

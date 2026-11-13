@@ -1,6 +1,7 @@
 //! The virtual file system: inodes from several file systems (tmpfs, devfs, procfs, ext2, pipes,
 //! sockets) behind one trait, open file descriptions, a mount table and path resolution.
 pub mod devfs;
+pub mod locks;
 pub mod pipe;
 pub mod ext2;
 pub mod procfs;

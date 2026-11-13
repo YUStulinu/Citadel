@@ -22,9 +22,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v1
-        with:
-          version: ${{ env.ZIG_VERSION }}
+      - name: Zig
+        run: sh tools/ci-install-zig.sh "$ZIG_VERSION"
       - name: Build the C library
         run: sh libc/build.sh build/libc
       - name: Formatting and parsing identical to glibc
@@ -56,9 +55,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v1
-        with:
-          version: ${{ env.ZIG_VERSION }}
+      - name: Zig
+        run: sh tools/ci-install-zig.sh "$ZIG_VERSION"
       - name: Tools
         run: |
           sudo apt-get update

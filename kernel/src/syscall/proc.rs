@@ -316,3 +316,17 @@ pub fn sigaltstack(new: u64, old: u64, user_rsp: u64) -> KResult<u64> {
     }
     Ok(0)
 }
+
+/// setuid: root may become anyone (real and effective id); others only their real id.
+pub fn setuid(uid: u32) -> KResult<u64> {
+    let p = proc::current();
+    if p.euid.load(Ordering::Relaxed) == 0 {
+        p.uid.store(uid, Ordering::Relaxed);
+        p.euid.store(uid, Ordering::Relaxed);
+    } else if uid == p.uid.load(Ordering::Relaxed) {
+        p.euid.store(uid, Ordering::Relaxed);
+    } else {
+        return Err(EPERM);
+    }
+    Ok(0)
+}

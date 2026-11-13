@@ -233,6 +233,12 @@ pub fn current_ref() -> &'static Task {
     unsafe { &*(p as *const Task) }
 }
 
+/// CPU time of the running task, including the period in progress.
+pub fn current_runtime_ns() -> u64 {
+    let t = current_ref();
+    t.runtime_ns.load(Ordering::Relaxed) + apic::now_ns().saturating_sub(t.switched_in_at.load(Ordering::Relaxed))
+}
+
 pub fn current() -> Arc<Task> {
     unsafe { (*percpu::this().sched.current.get()).clone().expect("no current task") }
 }

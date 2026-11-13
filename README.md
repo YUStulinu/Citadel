@@ -137,12 +137,38 @@ finish switching out.
   connections, non-blocking connect with `poll`, `getpeername`, UDP. Then `curl` from the host
   fetches pages and a 404 from `httpd` through virtio-net.
 - **libc**: identical output to glibc on 23,000 `printf`/`strtod`/`scanf` cases.
-- **Open POSIX Test Suite** (from LTP 20240930): 37 interfaces about processes, signals, memory, clocks
-  and time, run on both systems with the same binaries; see [POSIX results](#posix-results).
+- **Open POSIX Test Suite** (from LTP 20240930), 37 interfaces about processes, signals, memory,
+  clocks and time: **540 of 547 tests pass on Citadel, exactly as many as on Linux**, with the same
+  binaries; see [POSIX results](#posix-results).
 
 ### POSIX results
 
-The run was still in progress when this README was written; the results will be added here.
+The 37 interfaces in `user/posix/interfaces.txt` have 686 tests. 547 of them compile against
+Citadel's headers; the other 139 need threads (`pthread.h`, 106 tests), POSIX shared memory,
+message queues, `langinfo.h` and the like. The same 547 static binaries ran on both kernels with
+`/tests/posixrun /posix 20`:
+
+| | pass | fail | unresolved | unsupported | untested | hung |
+|---|---:|---:|---:|---:|---:|---:|
+| Citadel | 540 | 1 | 0 | 4 | 1 | 1 |
+| Linux (Alpine 6.6) | 540 | 1 | 0 | 4 | 1 | 1 |
+
+The seven that do not pass are the same tests on both systems:
+- `sigismember.5-1` fails on both: it expects an error for an invalid signal number, which the C
+  library does not report (glibc does not either).
+- `nanosleep.10000-1` sleeps longer than the 20-second limit on both.
+- The other five report UNSUPPORTED or UNTESTED for optional behaviour.
+
+The first run on Citadel passed 499 tests. The 41 fixes behind the rest:
+- stopping and continuing processes (`SIGSTOP`/`SIGTSTP`/`SIGCONT`, `wait` with `WUNTRACED` and
+  `WCONTINUED`, `SIGCHLD` with `CLD_STOPPED`/`CLD_CONTINUED` in `si_code`);
+- `SA_NOCLDWAIT`;
+- blocked signals that are ignored by default staying pending;
+- sleeps that go on after a stop and continue;
+- per-process user ids and `kill` permissions;
+- POSIX record locks;
+- `sigaltstack`;
+- argument checks on clocks and `fsync`.
 
 ## Building and running
 

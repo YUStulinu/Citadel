@@ -173,6 +173,9 @@ pub fn close(fd: i64) -> KResult<u64> {
         if fd < 0 || e.is_none() {
             return Err(EBADF);
         }
+        if let Some(entry) = e.as_ref() {
+            crate::fs::locks::release(p.pid, &entry.file.inode);
+        }
         e
     };
     drop(entry); // may release a pipe end or a socket (outside the table lock)
@@ -367,13 +370,20 @@ pub fn fcntl(fd: i64, cmd: u32, arg: u64) -> KResult<u64> {
             set_nonblock_inode(&f);
             Ok(0)
         }
-        5..=7 => Ok(0), // locks: always granted (single user)
+        5..=7 => {
+            drop(t);
+            crate::fs::locks::fcntl(&f, cmd, arg)
+        }
         _ => Err(EINVAL),
     }
 }
 
 pub fn fsync(fd: i64) -> KResult<u64> {
-    file(fd)?.inode.sync()?;
+    let f = file(fd)?;
+    if matches!(f.inode.kind(), Kind::Fifo | Kind::Socket | Kind::CharDev) {
+        return Err(EINVAL);
+    }
+    f.inode.sync()?;
     Ok(0)
 }
 

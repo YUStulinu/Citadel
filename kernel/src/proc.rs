@@ -168,6 +168,16 @@ pub struct Process {
     pub task: SpinLock<Option<Arc<Task>>>,
     pub start_ns: u64,
     pub utime_ns: AtomicU64,
+    /// Job control: stopped by SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU until SIGCONT.
+    pub stopped: core::sync::atomic::AtomicBool,
+    /// What wait(WUNTRACED) still has to report: (signal << 8) | 0x7f, or 0.
+    pub stop_report: AtomicI32,
+    /// wait(WCONTINUED) still has to report a continue.
+    pub cont_report: core::sync::atomic::AtomicBool,
+    pub stop_wq: WaitQueue,
+    /// Real and effective user ids (0 = root); used for kill permissions.
+    pub uid: AtomicU32,
+    pub euid: AtomicU32,
 }
 
 static NEXT_PID: AtomicU32 = AtomicU32::new(1);
@@ -209,6 +219,12 @@ fn new_process(ppid: u32, cr3: u64, name: &str) -> Arc<Process> {
         task: SpinLock::new(None),
         start_ns: crate::time::monotonic_ns(),
         utime_ns: AtomicU64::new(0),
+        stopped: core::sync::atomic::AtomicBool::new(false),
+        stop_report: AtomicI32::new(0),
+        cont_report: core::sync::atomic::AtomicBool::new(false),
+        stop_wq: WaitQueue::new(),
+        uid: AtomicU32::new(0),
+        euid: AtomicU32::new(0),
     });
     TABLE.lock().insert(pid, p.clone());
     p
@@ -303,6 +319,8 @@ pub fn fork(parent_frame: &TrapFrame) -> KResult<u32> {
     }
     *child.cwd.lock() = parent.cwd.lock().clone();
     child.umask.store(parent.umask.load(Ordering::Relaxed), Ordering::Relaxed);
+    child.uid.store(parent.uid.load(Ordering::Relaxed), Ordering::Relaxed);
+    child.euid.store(parent.euid.load(Ordering::Relaxed), Ordering::Relaxed);
     child.pgid.store(parent.pgid.load(Ordering::Relaxed), Ordering::Relaxed);
     child.sid.store(parent.sid.load(Ordering::Relaxed), Ordering::Relaxed);
     {
@@ -336,6 +354,7 @@ pub fn exit(wstatus: i32) -> ! {
         panic!("init exited (status {wstatus:#x})");
     }
     // Close files and release memory now; the zombie keeps only its exit status.
+    crate::fs::locks::release_all(p.pid);
     let files: Vec<Option<FdEntry>> = core::mem::take(&mut p.fds.lock().fds);
     drop(files);
     {
@@ -363,7 +382,20 @@ pub fn exit(wstatus: i32) -> ! {
     p.wstatus.store(wstatus, Ordering::Release);
     p.state.store(ZOMBIE, Ordering::Release);
     if let Some(parent) = by_pid(p.ppid.load(Ordering::Acquire)) {
-        crate::signal::send(&parent, crate::signal::SIGCHLD);
+        // A parent that ignores SIGCHLD or set SA_NOCLDWAIT gets no zombies (POSIX).
+        if crate::signal::no_zombies(&parent) {
+            parent.children.lock().retain(|c| c.pid != p.pid);
+            TABLE.lock().remove(&p.pid);
+        } else {
+            let (code, status) = if wstatus & 0x7f == 0 {
+                (crate::signal::CLD_EXITED, (wstatus >> 8) & 0xff)
+            } else if wstatus & 0x80 != 0 {
+                (crate::signal::CLD_DUMPED, wstatus & 0x7f)
+            } else {
+                (crate::signal::CLD_KILLED, wstatus & 0x7f)
+            };
+            crate::signal::send_info(&parent, crate::signal::SIGCHLD, (code, p.pid, p.uid.load(Ordering::Relaxed), status));
+        }
         parent.child_wq.wake_all();
     }
     *p.task.lock() = None;
@@ -373,6 +405,8 @@ pub fn exit(wstatus: i32) -> ! {
 }
 
 pub const WNOHANG: u64 = 1;
+pub const WUNTRACED: u64 = 2;
+pub const WCONTINUED: u64 = 8;
 
 /// wait4(): reaps a zombie child (pid -1: any; pid 0 / < -1: a process group).
 pub fn wait(pid: i64, options: u64) -> KResult<(u32, i32)> {
@@ -396,6 +430,22 @@ pub fn wait(pid: i64, options: u64) -> KResult<(u32, i32)> {
             TABLE.lock().remove(&c.pid);
             result = Ok(Some((c.pid, c.wstatus.load(Ordering::Acquire))));
             return true;
+        }
+        if options & WUNTRACED != 0 {
+            if let Some(c) = kids.iter().find(|c| matches(c) && c.stop_report.load(Ordering::Acquire) != 0) {
+                let st = c.stop_report.swap(0, Ordering::AcqRel);
+                if st != 0 {
+                    result = Ok(Some((c.pid, st)));
+                    return true;
+                }
+            }
+        }
+        if options & WCONTINUED != 0 {
+            if let Some(c) = kids.iter().find(|c| matches(c) && c.cont_report.load(Ordering::Acquire)) {
+                c.cont_report.store(false, Ordering::Release);
+                result = Ok(Some((c.pid, 0xffff)));
+                return true;
+            }
         }
         options & WNOHANG != 0
     });
