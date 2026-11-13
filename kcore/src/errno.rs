@@ -35,6 +35,7 @@ pub const ENOSYS: i64 = 38;
 pub const ENOTEMPTY: i64 = 39;
 pub const ELOOP: i64 = 40;
 pub const ENOTSOCK: i64 = 88;
+pub const EMSGSIZE: i64 = 90;
 pub const EDESTADDRREQ: i64 = 89;
 pub const EPROTOTYPE: i64 = 91;
 pub const ENOPROTOOPT: i64 = 92;

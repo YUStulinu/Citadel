@@ -126,6 +126,7 @@ extern "C" fn kmain(boot_info_phys: u64) -> ! {
     if let Some(d) = fs::ext2::mount_first("/mnt") {
         kprintln!("citadel: mounted {d} on /mnt");
     }
+    net::init();
 
     let init = bi.arg("init").unwrap_or("/bin/init");
     // Words after "--" on the command line become init's arguments.

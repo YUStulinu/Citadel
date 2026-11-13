@@ -18,6 +18,7 @@ link() { # name sources...
 link init "$here/init.c"
 link sh "$here/sh.c"
 link coreutils "$here/coreutils.c"
+link httpd "$here/httpd.c"
 for t in "$here"/tests/*.c; do
     [ -e "$t" ] || continue
     link "$(basename "$t" .c)" "$t"

@@ -9,4 +9,5 @@ pub mod cpio;
 pub mod elf;
 pub mod errno;
 pub mod ext2;
+pub mod net;
 pub mod path;

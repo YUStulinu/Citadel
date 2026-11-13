@@ -176,14 +176,15 @@ pub const O_CLOEXEC: u32 = 0o2000000;
 /// An open file description (shared by dup'ed descriptors and across fork).
 pub struct File {
     pub inode: InodeRef,
-    pub offset: SpinLock<u64>,
+    /// The file position. A sleeping lock: reads and writes may wait (disk, pipes, sockets).
+    pub offset: crate::sync::Mutex<u64>,
     pub flags: AtomicU32,
     pub path: String,
 }
 
 impl File {
     pub fn new(inode: InodeRef, flags: u32, path: String) -> Arc<File> {
-        Arc::new(File { inode, offset: SpinLock::new(0), flags: AtomicU32::new(flags & !O_CLOEXEC), path })
+        Arc::new(File { inode, offset: crate::sync::Mutex::new(0), flags: AtomicU32::new(flags & !O_CLOEXEC), path })
     }
     pub fn readable(&self) -> bool {
         self.flags.load(Ordering::Relaxed) & O_ACCMODE != O_WRONLY
@@ -199,14 +200,17 @@ impl File {
         if !self.readable() {
             return Err(EBADF);
         }
-        if self.inode.kind() == Kind::Dir {
+        let kind = self.inode.kind();
+        if kind == Kind::Dir {
             return Err(EISDIR);
+        }
+        if !matches!(kind, Kind::File | Kind::Symlink) {
+            // Streams (pipes, terminals, sockets, devices) have no position to protect.
+            return self.inode.read_at(0, buf);
         }
         let mut off = self.offset.lock();
         let n = self.inode.read_at(*off, buf)?;
-        if matches!(self.inode.kind(), Kind::File | Kind::Symlink) {
-            *off += n as u64;
-        }
+        *off += n as u64;
         Ok(n)
     }
 
@@ -214,14 +218,15 @@ impl File {
         if !self.writable() {
             return Err(EBADF);
         }
+        if self.inode.kind() != Kind::File {
+            return self.inode.write_at(0, buf);
+        }
         let mut off = self.offset.lock();
         if self.flags.load(Ordering::Relaxed) & O_APPEND != 0 {
             *off = self.inode.stat().size;
         }
         let n = self.inode.write_at(*off, buf)?;
-        if self.inode.kind() == Kind::File {
-            *off += n as u64;
-        }
+        *off += n as u64;
         Ok(n)
     }
 }
