@@ -1,0 +1,3 @@
+# Run once by /bin/init before the interactive shell.
+export PS1='citadel# '
+cat /etc/motd

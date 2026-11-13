@@ -1,0 +1,8 @@
+[package]
+name = "kcore"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Citadel's hardware-independent kernel logic (allocators, ELF, ext2, TCP, ...), tested on the host"
+
+[dependencies]
