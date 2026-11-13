@@ -71,5 +71,12 @@ void perror(const char *s);
 int remove(const char *path);
 int rename(const char *old, const char *new);
 FILE *popen(const char *cmd, const char *mode);
+void flockfile(FILE *f);
+void funlockfile(FILE *f);
+int ftrylockfile(FILE *f);
+int getc_unlocked(FILE *f);
+int putc_unlocked(int c, FILE *f);
+int getchar_unlocked(void);
+int putchar_unlocked(int c);
 int pclose(FILE *f);
 #endif

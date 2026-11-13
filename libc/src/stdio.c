@@ -203,6 +203,11 @@ void setbuf(FILE *restrict f, char *restrict buf) { setvbuf(f, buf, buf ? _IOFBF
 /* ------------------------------------------------------------ reading */
 
 static int refill(FILE *f) {
+    if ((f->flags & O_ACCMODE) == O_WRONLY) {
+        f->err = 1;
+        errno = EBADF;
+        return EOF;
+    }
     if (!f->reading) {
         if (f->pos && flush_write(f)) return EOF;
         f->reading = 1;
@@ -353,6 +358,11 @@ size_t fwrite(const void *restrict p, size_t sz, size_t n, FILE *restrict f) {
     size_t len = sz * n;
     const char *s = p;
     if (!len) return 0;
+    if ((f->flags & O_ACCMODE) == O_RDONLY) {
+        f->err = 1;
+        errno = EBADF;
+        return 0;
+    }
     if (f->reading) fflush(f);
     ensure_buf(f);
     if (f->mode == _IONBF || !f->buf) {
@@ -492,3 +502,12 @@ int pclose(FILE *f) {
         if (errno != EINTR) return -1;
     return st;
 }
+
+/* Processes are single-threaded: stream locking has nothing to do. */
+void flockfile(FILE *f) { (void)f; }
+void funlockfile(FILE *f) { (void)f; }
+int ftrylockfile(FILE *f) { (void)f; return 0; }
+int getc_unlocked(FILE *f) { return fgetc(f); }
+int putc_unlocked(int c, FILE *f) { return fputc(c, f); }
+int getchar_unlocked(void) { return fgetc(stdin); }
+int putchar_unlocked(int c) { return fputc(c, stdout); }

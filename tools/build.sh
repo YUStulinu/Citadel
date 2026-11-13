@@ -33,6 +33,7 @@ mkdir -p "$R/bin" "$R/etc" "$R/root" "$R/tests"
 for p in init sh coreutils; do cp "$OUT/user/$p" "$R/bin/"; done
 for t in $("$OUT/user/coreutils" --list); do ln -s coreutils "$R/bin/$t"; done
 for f in "$OUT"/user/*; do
+  [ -f "$f" ] || continue
   case $(basename "$f") in
     init | sh | coreutils) ;;
     lua | httpd) cp "$f" "$R/bin/" ;;
@@ -55,4 +56,5 @@ D=$OUT/disk-root
 rm -rf "$D"
 mkdir -p "$D"
 cp -r "$SRC/disk/." "$D/"
+if [ -d "$SRC/third_party/lua-tests" ]; then cp -r "$SRC/third_party/lua-tests" "$D/lua-tests"; fi
 "$OUT/tools/mkimage" "$OUT/citadel.img" "$E" "$D" "${ESP_MIB:-64}" "${ROOT_MIB:-128}"
