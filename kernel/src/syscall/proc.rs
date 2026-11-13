@@ -192,6 +192,7 @@ pub fn rt_sigprocmask(how: u32, set: u64, old: u64) -> KResult<u64> {
         }
         prev
     };
+    crate::sched::current_ref().sig_hint.store(true, Ordering::Release);
     if old != 0 {
         user::put_u64(old, prev)?;
     }
@@ -218,6 +219,7 @@ pub fn rt_sigsuspend(mask: u64) -> KResult<u64> {
         s.blocked = m & !(bit(signal::SIGKILL) | bit(signal::SIGSTOP));
         o
     };
+    crate::sched::current_ref().sig_hint.store(true, Ordering::Release);
     let me = crate::sched::current();
     let wq = crate::sched::WaitQueue::new();
     let pc: Arc<proc::Process> = p.clone();
@@ -229,4 +231,44 @@ pub fn rt_sigsuspend(mask: u64) -> KResult<u64> {
     // The handler runs with the temporary mask; its sigreturn restores the old one.
     p.sig.lock().restore_mask = Some(old);
     Err(EINTR)
+}
+
+fn task_of(pid: u32) -> KResult<alloc::sync::Arc<crate::sched::Task>> {
+    if pid == 0 {
+        return Ok(crate::sched::current());
+    }
+    let p = crate::proc::by_pid(pid).ok_or(ESRCH)?;
+    let t = p.task.lock().clone().ok_or(ESRCH)?;
+    Ok(t)
+}
+
+/// sched_setaffinity: restricts a process to a set of CPUs (moves it now if needed).
+pub fn sched_setaffinity(pid: u32, len: usize, mask_ptr: u64) -> KResult<u64> {
+    let mut buf = [0u8; 8];
+    let n = len.min(8);
+    crate::user::copy_in(mask_ptr, &mut buf[..n])?;
+    let online = (1u64 << crate::arch::percpu::online()) - 1;
+    let mask = u64::from_le_bytes(buf) & online;
+    if mask == 0 {
+        return Err(EINVAL);
+    }
+    let t = task_of(pid)?;
+    t.affinity.store(mask, core::sync::atomic::Ordering::Release);
+    if pid == 0 || alloc::sync::Arc::ptr_eq(&t, &crate::sched::current()) {
+        if !crate::sched::allowed_here(&t) {
+            crate::sched::yield_now();
+        }
+    }
+    Ok(0)
+}
+
+pub fn sched_getaffinity(pid: u32, len: usize, mask_ptr: u64) -> KResult<u64> {
+    if len < 8 {
+        return Err(EINVAL);
+    }
+    let t = task_of(pid)?;
+    let online = (1u64 << crate::arch::percpu::online()) - 1;
+    let mask = t.affinity.load(core::sync::atomic::Ordering::Acquire) & online;
+    crate::user::copy_out(mask_ptr, &mask.to_le_bytes())?;
+    Ok(8)
 }

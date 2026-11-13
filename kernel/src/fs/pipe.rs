@@ -1,7 +1,7 @@
 //! Pipes: a 64 KiB ring buffer between a read end and a write end. Reading an empty pipe
 //! blocks until data arrives or every writer is gone (end of file); writing to a pipe with no
 //! readers fails with EPIPE (and SIGPIPE). Named pipes (FIFOs) hand out ends when opened.
-use alloc::collections::VecDeque;
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::any::Any;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -14,8 +14,48 @@ use crate::sync::SpinLock;
 
 pub const CAPACITY: usize = 64 * 1024;
 
+/// A fixed ring buffer; reads and writes copy at most two contiguous pieces.
+pub struct Ring {
+    data: Box<[u8]>,
+    head: usize,
+    len: usize,
+}
+
+impl Ring {
+    fn new() -> Ring {
+        Ring { data: alloc::vec![0u8; CAPACITY].into_boxed_slice(), head: 0, len: 0 }
+    }
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    fn pop(&mut self, out: &mut [u8]) -> usize {
+        let n = out.len().min(self.len);
+        let first = n.min(CAPACITY - self.head);
+        out[..first].copy_from_slice(&self.data[self.head..self.head + first]);
+        out[first..n].copy_from_slice(&self.data[..n - first]);
+        self.head = (self.head + n) % CAPACITY;
+        self.len -= n;
+        if self.len == 0 {
+            self.head = 0;
+        }
+        n
+    }
+    fn push(&mut self, src: &[u8]) -> usize {
+        let n = src.len().min(CAPACITY - self.len);
+        let tail = (self.head + self.len) % CAPACITY;
+        let first = n.min(CAPACITY - tail);
+        self.data[tail..tail + first].copy_from_slice(&src[..first]);
+        self.data[..n - first].copy_from_slice(&src[first..n]);
+        self.len += n;
+        n
+    }
+}
+
 pub struct PipeInner {
-    buf: SpinLock<VecDeque<u8>>,
+    buf: SpinLock<Ring>,
     readers: AtomicU32,
     writers: AtomicU32,
     pub wq: WaitQueue,
@@ -24,7 +64,7 @@ pub struct PipeInner {
 
 impl PipeInner {
     fn new() -> Arc<PipeInner> {
-        Arc::new(PipeInner { buf: SpinLock::new(VecDeque::new()), readers: AtomicU32::new(0), writers: AtomicU32::new(0), wq: WaitQueue::new(), ino: new_ino() })
+        Arc::new(PipeInner { buf: SpinLock::new(Ring::new()), readers: AtomicU32::new(0), writers: AtomicU32::new(0), wq: WaitQueue::new(), ino: new_ino() })
     }
 }
 
@@ -82,11 +122,7 @@ impl Inode for PipeEnd {
         let ok = p.wq.wait_until(|| {
             let mut b = p.buf.lock();
             if !b.is_empty() {
-                let n = buf.len().min(b.len());
-                for (i, x) in b.drain(..n).enumerate() {
-                    buf[i] = x;
-                }
-                out = n;
+                out = b.pop(buf);
                 return true;
             }
             p.writers.load(Ordering::Acquire) == 0 || self.nonblock.load(Ordering::Relaxed)
@@ -116,11 +152,8 @@ impl Inode for PipeEnd {
                     return true;
                 }
                 let mut b = p.buf.lock();
-                let room = CAPACITY - b.len();
-                if room > 0 {
-                    let n = room.min(buf.len() - done);
-                    b.extend(&buf[done..done + n]);
-                    wrote = n;
+                if b.len() < CAPACITY {
+                    wrote = b.push(&buf[done..]);
                     return true;
                 }
                 self.nonblock.load(Ordering::Relaxed)

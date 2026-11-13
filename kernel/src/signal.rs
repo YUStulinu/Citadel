@@ -121,6 +121,7 @@ pub fn send(p: &Arc<Process>, sig: u32) {
     };
     if wake {
         if let Some(t) = p.task.lock().clone() {
+            t.sig_hint.store(true, Ordering::Release);
             t.interrupted.store(true, Ordering::Release);
             crate::sched::wake(&t);
         }
@@ -175,6 +176,7 @@ pub fn force(sig: u32, f: &mut TrapFrame) {
         s.blocked &= !bit(sig);
         s.pending |= bit(sig);
     }
+    crate::sched::current_ref().sig_hint.store(true, Ordering::Release);
     deliver_pending(f);
 }
 
@@ -199,6 +201,9 @@ const UC_MAGIC: u64 = 0x4349_5441_5349_4721; // "CITASIG!"
 
 /// Delivers one pending signal, if any, before returning to user mode with `f`.
 pub fn deliver_pending(f: &mut TrapFrame) {
+    if !crate::sched::current_ref().sig_hint.load(Ordering::Acquire) {
+        return; // fast path: nothing can be pending
+    }
     let Some(p) = proc::try_current() else { return };
     let t = crate::sched::current();
     let (sig, action) = {
@@ -206,6 +211,7 @@ pub fn deliver_pending(f: &mut TrapFrame) {
         let d = s.deliverable();
         if d == 0 {
             t.interrupted.store(false, Ordering::Release);
+            t.sig_hint.store(false, Ordering::Release);
             return;
         }
         let sig = d.trailing_zeros() + 1;
@@ -286,5 +292,6 @@ pub fn sigreturn(f: &mut TrapFrame) -> KResult<()> {
     }
     *f = nf;
     p.sig.lock().blocked = uc.blocked & !(bit(SIGKILL) | bit(SIGSTOP));
+    crate::sched::current_ref().sig_hint.store(true, Ordering::Release);
     Ok(())
 }

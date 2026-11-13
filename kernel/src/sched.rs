@@ -52,6 +52,13 @@ pub struct Task {
     pub switches: AtomicU64,
     /// Set when a signal should interrupt a sleep.
     pub interrupted: AtomicBool,
+    /// A signal may be deliverable: checked on every return to user mode without locking.
+    pub sig_hint: AtomicBool,
+    /// Bumped whenever this (user) task's mappings lose a translation or permission; a CPU that
+    /// still has the address space loaded from earlier must flush before running it again.
+    pub tlb_gen: AtomicU64,
+    /// CPUs this task may run on (bit i = CPU i).
+    pub affinity: AtomicU64,
     pub is_idle: bool,
 }
 
@@ -79,22 +86,31 @@ static NEXT_TID: AtomicU32 = AtomicU32::new(1);
 
 pub struct CpuSched {
     rq: SpinLock<VecDeque<Arc<Task>>>,
+    /// rq.len(), readable without the lock (load balancing reads every CPU's).
+    nr: AtomicUsize,
     current: UnsafeCell<Option<Arc<Task>>>,
     idle: UnsafeCell<Option<Arc<Task>>>,
     prev: UnsafeCell<Option<Arc<Task>>>,
+    /// A task switched away from that must be queued on another CPU (affinity change).
+    migrate: UnsafeCell<Option<Arc<Task>>>,
     slice: AtomicU32,
     pub need_resched: AtomicBool,
     pub switches: AtomicU64,
     pub idle_ns: AtomicU64,
+    /// When this CPU last switched to its idle task (0 while running something else).
+    idle_since: AtomicU64,
 }
 
 impl CpuSched {
     pub const fn new() -> Self {
         CpuSched {
             rq: SpinLock::new(VecDeque::new()),
+            nr: AtomicUsize::new(0),
             current: UnsafeCell::new(None),
             idle: UnsafeCell::new(None),
             prev: UnsafeCell::new(None),
+            migrate: UnsafeCell::new(None),
+            idle_since: AtomicU64::new(0),
             slice: AtomicU32::new(SLICE_TICKS),
             need_resched: AtomicBool::new(false),
             switches: AtomicU64::new(0),
@@ -102,7 +118,7 @@ impl CpuSched {
         }
     }
     pub fn queued(&self) -> usize {
-        self.rq.lock().len()
+        self.nr.load(Ordering::Relaxed)
     }
 }
 
@@ -171,6 +187,9 @@ fn new_task(name: &str, f: Option<Box<dyn FnOnce() + Send>>, idle: bool) -> Arc<
         switched_in_at: AtomicU64::new(0),
         switches: AtomicU64::new(0),
         interrupted: AtomicBool::new(false),
+        sig_hint: AtomicBool::new(true),
+        tlb_gen: AtomicU64::new(0),
+        affinity: AtomicU64::new(u64::MAX),
         is_idle: idle,
     });
     // Initial FPU state: what fninit + default MXCSR give.
@@ -206,6 +225,14 @@ pub fn create_task(name: &str, f: impl FnOnce() + Send + 'static) -> Arc<Task> {
     new_task(name, Some(Box::new(f)), false)
 }
 
+/// The running task, without touching its reference count.
+pub fn current_ref() -> &'static Task {
+    let p: u64;
+    unsafe { core::arch::asm!("mov {}, gs:[24]", out(reg) p, options(nostack, preserves_flags, readonly)) };
+    // The running task is alive for as long as it runs; callers use the reference immediately.
+    unsafe { &*(p as *const Task) }
+}
+
 pub fn current() -> Arc<Task> {
     unsafe { (*percpu::this().sched.current.get()).clone().expect("no current task") }
 }
@@ -222,6 +249,8 @@ pub fn init_cpu() {
     me.cpu.store(percpu::cpu_id(), Ordering::Release);
     me.switched_in_at.store(apic::now_ns(), Ordering::Relaxed);
     let cs = &percpu::this().sched;
+    cs.idle_since.store(apic::now_ns().max(1), Ordering::Relaxed);
+    percpu::this().current_task = Arc::as_ptr(&me) as u64;
     unsafe {
         *cs.idle.get() = Some(me.clone());
         *cs.current.get() = Some(me);
@@ -232,11 +261,21 @@ pub fn init_cpu() {
 fn pick_cpu(t: &Task) -> usize {
     let n = percpu::online();
     let last = t.cpu.load(Ordering::Relaxed);
+    let mask = t.affinity.load(Ordering::Relaxed);
+    if mask.count_ones() == 1 && (mask.trailing_zeros() as usize) < n {
+        return mask.trailing_zeros() as usize;
+    }
     let mut best = last.min(n - 1);
+    if mask & (1 << best) == 0 {
+        best = (0..n).find(|i| mask & (1 << i) != 0).unwrap_or(0);
+    }
     let mut best_len = usize::MAX;
     for i in 0..n {
+        if mask & (1 << i) == 0 {
+            continue;
+        }
         if let Some(pc) = percpu::get(i) {
-            let len = pc.sched.queued() + if unsafe { (*pc.sched.current.get()).as_ref().is_some_and(|c| !c.is_idle) } { 1 } else { 0 };
+            let len = pc.sched.queued() + if pc.sched.idle_since.load(Ordering::Relaxed) == 0 { 1 } else { 0 };
             if len < best_len || (len == best_len && i == last) {
                 best = i;
                 best_len = len;
@@ -250,7 +289,11 @@ pub fn enqueue(t: Arc<Task>) {
     let cpu_id = pick_cpu(&t);
     let pc = percpu::get(cpu_id).unwrap();
     t.state.store(RUNNABLE, Ordering::Release);
-    pc.sched.rq.lock().push_back(t);
+    {
+        let mut rq = pc.sched.rq.lock();
+        rq.push_back(t);
+        pc.sched.nr.store(rq.len(), Ordering::Relaxed);
+    }
     if cpu_id != percpu::cpu_id() {
         apic::ipi(pc.apic_id, apic::IPI_RESCHEDULE);
     } else {
@@ -281,13 +324,26 @@ fn steal() -> Option<Arc<Task>> {
         }
     }
     let (i, _) = best?;
-    percpu::get(i)?.sched.rq.try_lock()?.pop_back()
+    let victim = percpu::get(i)?;
+    let mut rq = victim.sched.rq.try_lock()?;
+    // The most recently queued task this CPU is allowed to run.
+    let pos = rq.iter().rposition(|t| t.affinity.load(Ordering::Relaxed) & (1 << me) != 0)?;
+    let t = rq.remove(pos);
+    victim.sched.nr.store(rq.len(), Ordering::Relaxed);
+    t
+}
+
+pub fn allowed_here(t: &Task) -> bool {
+    t.affinity.load(Ordering::Relaxed) & (1 << percpu::cpu_id()) != 0
 }
 
 fn finish_switch() {
     let cs = &percpu::this().sched;
     if let Some(prev) = unsafe { (*cs.prev.get()).take() } {
         prev.on_cpu.store(false, Ordering::Release);
+    }
+    if let Some(m) = unsafe { (*cs.migrate.get()).take() } {
+        enqueue(m);
     }
 }
 
@@ -304,9 +360,15 @@ pub fn schedule() {
         let mut rq = cs.rq.lock();
         if cur.state.load(Ordering::Acquire) == RUNNING && !cur.is_idle {
             cur.state.store(RUNNABLE, Ordering::Release);
-            rq.push_back(cur.clone());
+            if allowed_here(&cur) {
+                rq.push_back(cur.clone());
+            } else {
+                // Its affinity changed: move it to a CPU it may use (after this switch).
+                unsafe { *cs.migrate.get() = Some(cur.clone()) };
+            }
         }
         let n = rq.pop_front();
+        cs.nr.store(rq.len(), Ordering::Relaxed);
         drop(rq);
         n.or_else(steal).unwrap_or_else(|| unsafe { (*cs.idle.get()).clone().unwrap() })
     };
@@ -331,6 +393,7 @@ pub fn schedule() {
         cs.idle_ns.fetch_add(ran, Ordering::Relaxed);
     }
     next.switched_in_at.store(now, Ordering::Relaxed);
+    cs.idle_since.store(if next.is_idle { now.max(1) } else { 0 }, Ordering::Relaxed);
 
     // Hardware state: FPU/SSE registers, FS base (TLS), address space, kernel stack.
     unsafe {
@@ -339,14 +402,29 @@ pub fn schedule() {
     }
     cur.fs_base.store(cpu::rdmsr(cpu::MSR_FS_BASE), Ordering::Relaxed);
     cpu::wrmsr(cpu::MSR_FS_BASE, next.fs_base.load(Ordering::Relaxed));
+    // Address space ("lazy TLB", as in Linux): kernel threads and the idle task only use the
+    // shared upper half, so they keep whatever is loaded; switching from the idle task back to
+    // the process that ran before then costs no TLB flush. A user task gets its CR3 loaded unless
+    // it is already loaded at the same TLB generation.
+    let kernel = crate::mm::paging::kernel_pml4();
+    let loaded = pc.loaded_cr3.load(Ordering::Relaxed);
+    if cur.cr3.load(Ordering::Relaxed) == loaded && loaded != kernel {
+        pc.loaded_gen.store(cur.tlb_gen.load(Ordering::Acquire), Ordering::Relaxed);
+    }
     let cr3 = next.cr3.load(Ordering::Acquire);
-    if cpu::read_cr3() & crate::mm::paging::ADDR != cr3 {
-        cpu::write_cr3(cr3);
+    if cr3 != kernel {
+        let generation = next.tlb_gen.load(Ordering::Acquire);
+        if loaded != cr3 || pc.loaded_gen.load(Ordering::Relaxed) != generation {
+            cpu::write_cr3(cr3);
+            pc.loaded_cr3.store(cr3, Ordering::Release);
+            pc.loaded_gen.store(generation, Ordering::Relaxed);
+        }
     }
     percpu::set_kernel_stack(next.kstack_top());
 
     let save = cur.ctx_rsp.get();
     let new_rsp = unsafe { *next.ctx_rsp.get() };
+    pc.current_task = Arc::as_ptr(&next) as u64;
     unsafe {
         *cs.prev.get() = Some(cur.clone());
         *cs.current.get() = Some(next);
@@ -409,6 +487,49 @@ fn cancel_sleep(me: &Arc<Task>) {
     }
 }
 
+/// Loads an address space on this CPU for the current task (exec, exit).
+pub fn load_cr3(cr3: u64) {
+    let pc = percpu::this();
+    cpu::write_cr3(cr3);
+    pc.loaded_cr3.store(cr3, Ordering::Release);
+    pc.loaded_gen.store(current_ref().tlb_gen.load(Ordering::Acquire), Ordering::Relaxed);
+}
+
+/// The current task's mappings changed (an entry was removed or lost a permission): flush it
+/// here, and make other CPUs that kept this address space loaded flush before reusing it.
+pub fn user_tlb_changed(addr: u64) {
+    cpu::invlpg(addr);
+    current_ref().tlb_gen.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Before an address space is freed: no CPU may still have it loaded (lazily, under a kernel
+/// thread or the idle task). Such CPUs are asked to switch to the kernel's tables.
+pub fn evict_lazy_cr3(cr3: u64) {
+    let me = percpu::cpu_id();
+    for i in 0..percpu::online() {
+        if i == me {
+            continue;
+        }
+        let Some(pc) = percpu::get(i) else { continue };
+        if pc.loaded_cr3.load(Ordering::Acquire) == cr3 {
+            apic::ipi(pc.apic_id, apic::IPI_TLB);
+            while pc.loaded_cr3.load(Ordering::Acquire) == cr3 {
+                core::hint::spin_loop();
+            }
+        }
+    }
+}
+
+/// IPI_TLB: drop a lazily kept address space.
+pub fn handle_tlb_ipi() {
+    let pc = percpu::this();
+    let kernel = crate::mm::paging::kernel_pml4();
+    if current_ref().cr3.load(Ordering::Acquire) == kernel && pc.loaded_cr3.load(Ordering::Relaxed) != kernel {
+        cpu::write_cr3(kernel);
+        pc.loaded_cr3.store(kernel, Ordering::Release);
+    }
+}
+
 pub fn yield_now() {
     schedule();
 }
@@ -417,19 +538,32 @@ pub fn yield_now() {
 
 pub struct WaitQueue {
     waiters: SpinLock<Vec<Arc<Task>>>,
+    /// Number of waiters, readable without the lock: wake-ups on a queue nobody waits on (the
+    /// common case for pipes and the poll queue) cost one atomic load. A sleeper publishes
+    /// itself here before testing its condition, and a waker changes the state the condition
+    /// reads before loading this (both SeqCst), so a wake-up cannot be missed.
+    count: AtomicUsize,
 }
 
 impl WaitQueue {
     pub const fn new() -> Self {
-        WaitQueue { waiters: SpinLock::new(Vec::new()) }
+        WaitQueue { waiters: SpinLock::new(Vec::new()), count: AtomicUsize::new(0) }
     }
 
     /// Sleeps until `cond()` is true. Returns false if interrupted by a signal first.
     pub fn wait_until(&self, mut cond: impl FnMut() -> bool) -> bool {
+        // Fast path: no need to queue up if the condition already holds.
+        if cond() {
+            return true;
+        }
         let me = current();
         loop {
-            me.state.store(SLEEPING, Ordering::Release);
-            self.waiters.lock().push(me.clone());
+            me.state.store(SLEEPING, Ordering::SeqCst);
+            {
+                let mut w = self.waiters.lock();
+                w.push(me.clone());
+                self.count.store(w.len(), Ordering::SeqCst);
+            }
             let done = cond();
             if done || me.interrupted.load(Ordering::Acquire) {
                 self.remove(&me);
@@ -442,13 +576,21 @@ impl WaitQueue {
     }
 
     fn remove(&self, t: &Arc<Task>) {
-        self.waiters.lock().retain(|w| !Arc::ptr_eq(w, t));
+        let mut w = self.waiters.lock();
+        w.retain(|x| !Arc::ptr_eq(x, t));
+        self.count.store(w.len(), Ordering::SeqCst);
     }
 
     pub fn wake_all(&self) {
-        let ws: Vec<Arc<Task>> = core::mem::take(&mut *self.waiters.lock());
-        for w in ws {
-            wake(&w);
+        if self.count.load(Ordering::SeqCst) != 0 {
+            let ws: Vec<Arc<Task>> = {
+                let mut w = self.waiters.lock();
+                self.count.store(0, Ordering::SeqCst);
+                core::mem::take(&mut *w)
+            };
+            for w in ws {
+                wake(&w);
+            }
         }
         // Anything that changes readiness also wakes the tasks in poll/select.
         if !core::ptr::eq(self, &POLL_WQ) {
@@ -457,12 +599,16 @@ impl WaitQueue {
     }
 
     pub fn wake_one(&self) {
-        let w = {
-            let mut q = self.waiters.lock();
-            if q.is_empty() { None } else { Some(q.remove(0)) }
-        };
-        if let Some(w) = w {
-            wake(&w);
+        if self.count.load(Ordering::SeqCst) != 0 {
+            let w = {
+                let mut q = self.waiters.lock();
+                let w = if q.is_empty() { None } else { Some(q.remove(0)) };
+                self.count.store(q.len(), Ordering::SeqCst);
+                w
+            };
+            if let Some(w) = w {
+                wake(&w);
+            }
         }
         POLL_WQ.wake_all();
     }
@@ -550,6 +696,14 @@ pub fn sleep_ns(ns: u64) -> bool {
 pub fn stats() -> Vec<(usize, u64, u64, u64)> {
     (0..percpu::online())
         .filter_map(percpu::get)
-        .map(|pc| (pc.sched.queued(), pc.sched.switches.load(Ordering::Relaxed), pc.sched.idle_ns.load(Ordering::Relaxed), pc.ticks.load(Ordering::Relaxed)))
+        .map(|pc| {
+            // Include the idle period in progress (it is only added up when idle is switched out).
+            let mut idle = pc.sched.idle_ns.load(Ordering::Relaxed);
+            let since = pc.sched.idle_since.load(Ordering::Relaxed);
+            if since != 0 {
+                idle += apic::now_ns().saturating_sub(since);
+            }
+            (pc.sched.queued(), pc.sched.switches.load(Ordering::Relaxed), idle, pc.ticks.load(Ordering::Relaxed))
+        })
         .collect()
 }

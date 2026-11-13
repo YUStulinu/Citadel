@@ -6,15 +6,40 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #define CITADEL_POWEROFF 1001
 
-static long sys_poweroff(int code) {
+static long sys6(long n, long a, long b, long c, long d, long e) {
     long r;
-    __asm__ volatile("syscall" : "=a"(r) : "a"((long)CITADEL_POWEROFF), "D"((long)code) : "rcx", "r11", "memory");
+    register long r10 __asm__("r10") = d;
+    register long r8 __asm__("r8") = e;
+    __asm__ volatile("syscall" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c), "r"(r10), "r"(r8) : "rcx", "r11", "memory");
     return r;
+}
+
+/* Citadel: its own power-off call (QEMU's debug-exit device carries the status out).
+   Linux (the comparison baseline runs this same init): reboot(POWER_OFF). */
+static long sys_poweroff(int code) {
+    long r = sys6(CITADEL_POWEROFF, code, 0, 0, 0, 0);
+    sync();
+    sys6(169, 0xfee1dead, 672274793, 0x4321fedc, 0, 0);
+    return r;
+}
+
+/* On Linux the kernel does not mount anything for us. */
+static void linux_mounts(void) {
+    if (access("/proc/self", F_OK) == 0) return;
+    mkdir("/proc", 0555);
+    mkdir("/dev", 0755);
+    mkdir("/tmp", 01777);
+    sys6(165, (long)"proc", (long)"/proc", (long)"proc", 0, 0);
+    sys6(165, (long)"devtmpfs", (long)"/dev", (long)"devtmpfs", 0, 0);
+    sys6(165, (long)"tmpfs", (long)"/tmp", (long)"tmpfs", 0, 0);
+    mkdir("/sys", 0555);
+    sys6(165, (long)"sysfs", (long)"/sys", (long)"sysfs", 0, 0);
 }
 
 static pid_t spawn(char *const argv[], int fg) {
@@ -51,6 +76,7 @@ static int wait_for(pid_t want) {
 }
 
 int main(int argc, char **argv) {
+    linux_mounts();
     signal(SIGINT, SIG_IGN);
     signal(SIGQUIT, SIG_IGN);
     signal(SIGTSTP, SIG_IGN);

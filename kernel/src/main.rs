@@ -67,6 +67,9 @@ extern "C" fn kmain(boot_info_phys: u64) -> ! {
     cpu::init_features();
     kprintln!("citadel: booting, cmdline \"{}\"", bi.cmdline());
 
+    if bi.arg("thp") == Some("off") {
+        mm::fault::THP.store(false, core::sync::atomic::Ordering::Relaxed);
+    }
     mm::frame::init(bi);
     mm::paging::init();
     kprintln!("citadel: memory {} MiB free of {} MiB", mm::frame::free_bytes() >> 20, mm::frame::total_bytes() >> 20);
@@ -83,7 +86,7 @@ extern "C" fn kmain(boot_info_phys: u64) -> ! {
     syscall::init_msrs();
     sched::init_cpu();
     apic::start_timer(sched::HZ);
-    kprintln!("citadel: TSC {} MHz, {} CPUs in ACPI", apic::tsc_per_us(), madt.apic_ids.len());
+    kprintln!("citadel: TSC {} MHz, {} CPUs in ACPI, {}", apic::tsc_per_us(), madt.apic_ids.len(), if apic::x2apic_enabled() { "x2APIC" } else { "xAPIC" });
 
     let aps = smp::start_aps(&madt.apic_ids);
     kprintln!("citadel: {} CPUs online", 1 + aps);
@@ -114,6 +117,7 @@ extern "C" fn kmain(boot_info_phys: u64) -> ! {
     }
     fs::mount("/dev", fs::devfs::DevDir::new(), "devfs");
     fs::mount("/tmp", fs::tmpfs::TmpInode::new_root(), "tmpfs");
+    fs::mount("/proc", fs::procfs::ProcRoot::new(), "proc");
 
     let init = bi.arg("init").unwrap_or("/bin/init");
     // Words after "--" on the command line become init's arguments.

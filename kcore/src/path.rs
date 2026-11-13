@@ -24,6 +24,21 @@ pub fn normalize(cwd: &str, path: &str) -> String {
     s
 }
 
+/// True if `p` is already what `normalize` would return: absolute, no empty, "." or ".."
+/// components and no trailing slash (except "/" itself). Lets callers skip an allocation.
+pub fn is_normal(p: &str) -> bool {
+    if !p.starts_with('/') {
+        return false;
+    }
+    if p == "/" {
+        return true;
+    }
+    if p.ends_with('/') {
+        return false;
+    }
+    p[1..].split('/').all(|c| !c.is_empty() && c != "." && c != "..")
+}
+
 /// ("/a/b", "c") for "/a/b/c"; ("/", "x") for "/x".
 pub fn split_last(abs: &str) -> (&str, &str) {
     match abs.rfind('/') {
@@ -36,6 +51,17 @@ pub fn split_last(abs: &str) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normal_paths() {
+        for p in ["/", "/a", "/a/b", "/bin/sh", "/a.b/..c"] {
+            assert!(is_normal(p), "{p}");
+            assert_eq!(normalize("/", p), p);
+        }
+        for p in ["", "a", "/a/", "//a", "/a//b", "/./a", "/a/.", "/a/../b", "/.."] {
+            assert!(!is_normal(p), "{p}");
+        }
+    }
 
     #[test]
     fn normalizes() {

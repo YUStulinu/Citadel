@@ -32,6 +32,9 @@ pub fn backtrace(mut rbp: u64) {
     }
 }
 
+/// Transparent huge pages for anonymous memory (on by default; "thp=off" on the command line).
+pub static THP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
 /// Makes `addr` accessible to the current process if its memory areas allow it. Returns false
 /// for an access the program is not allowed to make.
 pub fn handle_user(addr: u64, write: bool, exec: bool) -> bool {
@@ -59,45 +62,61 @@ pub fn handle_user(addr: u64, write: bool, exec: bool) -> bool {
         prot |= PROT_READ;
     }
     let cr3 = mm.cr3;
-    match paging::entry(cr3, page) {
-        None => {
-            let Some(phys) = frame::alloc_zeroed(0) else { return false };
-            let mut flags = paging::U;
-            if prot & PROT_WRITE != 0 {
-                flags |= paging::W;
-            }
-            if prot & PROT_EXEC == 0 {
-                flags |= paging::NX;
-            }
-            if !paging::map(cr3, page, phys, flags) {
-                frame::free(phys, 0);
-                return false;
-            }
-            true
-        }
-        Some(e) => {
-            if write && *e & paging::COW != 0 {
-                let phys = *e & paging::ADDR;
-                if frame::page_refs(phys) == 0 {
-                    *e = (*e | paging::W) & !paging::COW;
-                } else {
-                    let Some(n) = frame::alloc(0) else { return false };
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(crate::boot::phys_to_virt(phys) as *const u8, crate::boot::phys_to_virt(n) as *mut u8, 4096);
-                    }
-                    *e = n | ((*e & !paging::ADDR & !paging::COW) | paging::W);
-                    frame::page_unref(phys);
+    // Transparent huge pages: a first touch in a 2 MiB-aligned stretch that an area covers
+    // completely, with nothing mapped there yet, gets one 2 MiB page (one fault instead of 512).
+    if THP.load(core::sync::atomic::Ordering::Relaxed) {
+        let base = addr & !(paging::HUGE_SIZE - 1);
+        let covered = mm.find(base).is_some_and(|v| !v.grows_down && !v.nohuge && v.end >= base + paging::HUGE_SIZE);
+        if covered && paging::leaf(cr3, addr).is_none() {
+            if let Some(phys) = frame::alloc_zeroed(paging::HUGE_ORDER) {
+                let mut flags = paging::U;
+                if prot & PROT_WRITE != 0 {
+                    flags |= paging::W;
                 }
-                cpu::invlpg(page);
-                return true;
+                if prot & PROT_EXEC == 0 {
+                    flags |= paging::NX;
+                }
+                if paging::map_huge(cr3, base, phys, flags) {
+                    return true;
+                }
+                frame::free(phys, paging::HUGE_ORDER);
             }
-            // Present and allowed: another CPU of this process fixed it meanwhile, or a stale
-            // TLB entry.
-            if write && *e & paging::W == 0 {
-                return false;
-            }
-            cpu::invlpg(page);
-            true
         }
     }
+    // One walk, creating the tables on the way: the slot for the page either holds a mapping
+    // already or is empty.
+    let Some(e) = paging::slot(cr3, page) else { return false };
+    if *e & paging::P == 0 {
+        let Some(phys) = frame::alloc_zeroed(0) else { return false };
+        let mut flags = paging::U | paging::P;
+        if prot & PROT_WRITE != 0 {
+            flags |= paging::W;
+        }
+        if prot & PROT_EXEC == 0 {
+            flags |= paging::NX;
+        }
+        *e = phys | flags;
+        return true;
+    }
+    if write && *e & paging::COW != 0 {
+        let phys = *e & paging::ADDR;
+        if frame::page_refs(phys) == 0 {
+            *e = (*e | paging::W) & !paging::COW;
+        } else {
+            let Some(n) = frame::alloc(0) else { return false };
+            unsafe {
+                core::ptr::copy_nonoverlapping(crate::boot::phys_to_virt(phys) as *const u8, crate::boot::phys_to_virt(n) as *mut u8, 4096);
+            }
+            *e = n | ((*e & !paging::ADDR & !paging::COW) | paging::W);
+            frame::page_unref(phys);
+        }
+        crate::sched::user_tlb_changed(page);
+        return true;
+    }
+    // Present and allowed: a stale TLB entry.
+    if write && *e & paging::W == 0 {
+        return false;
+    }
+    cpu::invlpg(page);
+    true
 }

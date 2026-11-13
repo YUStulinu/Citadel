@@ -271,35 +271,48 @@ fn resolve_inner(abs: &str, follow: bool, depth: usize) -> KResult<(String, Inod
     if depth > MAX_SYMLINKS {
         return Err(ELOOP);
     }
-    let norm = kcore::path::normalize("/", abs);
+    // Hot path (stat, open, exec): no allocation besides the resulting path string.
+    let owned;
+    let norm: &str = if kcore::path::is_normal(abs) {
+        abs
+    } else {
+        owned = kcore::path::normalize("/", abs);
+        &owned
+    };
     let mut cur = root();
-    let mut cur_path = String::from("/");
-    let comps: Vec<&str> = norm.split('/').filter(|c| !c.is_empty()).collect();
-    for (i, c) in comps.iter().enumerate() {
+    let mut path = String::with_capacity(norm.len().max(1));
+    let mut rest = &norm[1..];
+    while !rest.is_empty() {
+        let (c, tail) = match rest.find('/') {
+            Some(i) => (&rest[..i], &rest[i + 1..]),
+            None => (rest, ""),
+        };
         if cur.kind() != Kind::Dir {
             return Err(ENOTDIR);
         }
         let next = cur.lookup(c)?;
-        let mut next_path = cur_path.clone();
-        if next_path != "/" {
-            next_path.push('/');
-        }
-        next_path.push_str(c);
-        let last = i + 1 == comps.len();
-        if next.kind() == Kind::Symlink && (!last || follow) {
+        let parent_len = path.len();
+        path.push('/');
+        path.push_str(c);
+        let kind = next.kind();
+        if kind == Kind::Symlink && (!tail.is_empty() || follow) {
             let target = next.readlink()?;
-            let base = kcore::path::split_last(&next_path).0;
-            let mut rest = kcore::path::normalize(base, &target);
-            for r in &comps[i + 1..] {
-                rest.push('/');
-                rest.push_str(r);
+            let base = if parent_len == 0 { "/" } else { &path[..parent_len] };
+            let mut again = kcore::path::normalize(base, &target);
+            if !tail.is_empty() {
+                again.push('/');
+                again.push_str(tail);
             }
-            return resolve_inner(&rest, follow, depth + 1);
+            return resolve_inner(&again, follow, depth + 1);
         }
-        cur = mounted_at(&next_path).unwrap_or(next);
-        cur_path = next_path;
+        // Only directories can be mount points.
+        cur = if kind == Kind::Dir { mounted_at(&path).unwrap_or(next) } else { next };
+        rest = tail;
     }
-    Ok((cur_path, cur))
+    if path.is_empty() {
+        path.push('/');
+    }
+    Ok((path, cur))
 }
 
 /// The directory that would contain `abs`, and the last component.

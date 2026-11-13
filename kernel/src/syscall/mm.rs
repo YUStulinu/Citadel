@@ -34,7 +34,7 @@ pub fn brk(addr: u64) -> KResult<u64> {
         match mm.vmas.iter_mut().find(|v| v.start == start) {
             Some(v) => v.end = new_end,
             None => {
-                mm.vmas.push(Vma { start, end: new_end, prot: PROT_READ | PROT_WRITE, grows_down: false });
+                mm.vmas.push(Vma { start, end: new_end, prot: PROT_READ | PROT_WRITE, grows_down: false, nohuge: false });
                 mm.vmas.sort_by_key(|v| v.start);
             }
         }
@@ -97,7 +97,7 @@ pub fn mmap(addr: u64, len: u64, prot: u32, flags: u32, fd: i64, off: u64) -> KR
             mm.find_free(len)
         };
         // Writable while we fill it; the final protection is set below.
-        mm.insert(Vma { start, end: start + len, prot: prot | if data.is_some() { PROT_WRITE } else { 0 }, grows_down: false });
+        mm.insert(Vma { start, end: start + len, prot: prot | if data.is_some() { PROT_WRITE } else { 0 }, grows_down: false, nohuge: false });
         start
     };
     if let Some(d) = data {
@@ -138,7 +138,7 @@ pub fn mprotect(addr: u64, len: u64, prot: u32) -> KResult<u64> {
         }
         let (s, e) = (v.start.max(addr), v.end.min(end));
         covered += e - s;
-        out.push(Vma { start: s, end: e, prot, grows_down: v.grows_down });
+        out.push(Vma { start: s, end: e, prot, grows_down: v.grows_down, nohuge: v.nohuge });
         if v.end > end {
             out.push(Vma { start: end, ..v.clone() });
         }
@@ -161,9 +161,28 @@ pub fn mprotect(addr: u64, len: u64, prot: u32) -> KResult<u64> {
                 v |= paging::NX;
             }
             *e = v;
-            crate::arch::cpu::invlpg(a);
+            crate::sched::user_tlb_changed(a);
         }
         a += 4096;
+    }
+    Ok(0)
+}
+
+/// madvise: MADV_HUGEPAGE / MADV_NOHUGEPAGE switch transparent huge pages for the areas in the
+/// range; other advice is accepted and ignored.
+pub fn madvise(addr: u64, len: u64, advice: u32) -> KResult<u64> {
+    const MADV_HUGEPAGE: u32 = 14;
+    const MADV_NOHUGEPAGE: u32 = 15;
+    if addr & 0xfff != 0 {
+        return Err(EINVAL);
+    }
+    if advice == MADV_HUGEPAGE || advice == MADV_NOHUGEPAGE {
+        let p = crate::proc::current();
+        let mut mm = p.mm.lock();
+        let end = addr.saturating_add(len);
+        for v in mm.vmas.iter_mut().filter(|v| v.start < end && v.end > addr) {
+            v.nohuge = advice == MADV_NOHUGEPAGE;
+        }
     }
     Ok(0)
 }

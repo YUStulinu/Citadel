@@ -31,15 +31,33 @@ const TIMER_INIT: u32 = 0x380;
 const TIMER_CUR: u32 = 0x390;
 const TIMER_DIV: u32 = 0x3e0;
 
+/// x2APIC mode: registers are MSRs (0x800 + offset/16). Under KVM this matters a lot: an MSR
+/// write to the ICR or EOI is handled on a fast path, while every xAPIC MMIO access is a full
+/// exit to the hypervisor (a cross-CPU wake-up took three of them).
+static X2APIC: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+fn x2() -> bool {
+    X2APIC.load(Ordering::Relaxed)
+}
+
 fn lapic_read(reg: u32) -> u32 {
+    if x2() {
+        return cpu::rdmsr(0x800 + (reg >> 4)) as u32;
+    }
     unsafe { core::ptr::read_volatile((LAPIC.get() + reg as u64) as *const u32) }
 }
 fn lapic_write(reg: u32, v: u32) {
+    if x2() {
+        cpu::wrmsr(0x800 + (reg >> 4), v as u64);
+        return;
+    }
     unsafe { core::ptr::write_volatile((LAPIC.get() + reg as u64) as *mut u32, v) }
 }
 
 pub fn map(lapic_phys: u64, ioapic_phys: u64) {
     LAPIC.set(paging::map_mmio(lapic_phys, 4096));
+    let no_x2 = crate::BOOT_INFO.get().arg("x2apic") == Some("off");
+    X2APIC.store(!no_x2 && cpu::cpuid(1, 0).ecx & (1 << 21) != 0, Ordering::Relaxed);
     IOAPIC.set(paging::map_mmio(ioapic_phys, 4096));
     // The legacy PICs: remap away from the exception vectors and mask everything.
     for (p, v) in [(0x20, 0x11), (0xa0, 0x11), (0x21, 0x20), (0xa1, 0x28), (0x21, 4), (0xa1, 2), (0x21, 1), (0xa1, 1), (0x21, 0xff), (0xa1, 0xff)] {
@@ -49,12 +67,24 @@ pub fn map(lapic_phys: u64, ioapic_phys: u64) {
 
 /// Enables this CPU's local APIC.
 pub fn init_local() {
-    cpu::wrmsr(cpu::MSR_APIC_BASE, cpu::rdmsr(cpu::MSR_APIC_BASE) | (1 << 11));
+    let mut base = cpu::rdmsr(cpu::MSR_APIC_BASE) | (1 << 11);
+    if x2() {
+        base |= 1 << 10;
+    }
+    cpu::wrmsr(cpu::MSR_APIC_BASE, base);
     lapic_write(SVR, 0x100 | SPURIOUS_VECTOR as u32);
 }
 
+/// This CPU's APIC ID (valid before or after init_local).
 pub fn id() -> u32 {
-    lapic_read(ID) >> 24
+    if cpu::rdmsr(cpu::MSR_APIC_BASE) & (1 << 10) != 0 {
+        return cpu::rdmsr(0x802) as u32;
+    }
+    unsafe { core::ptr::read_volatile((LAPIC.get() + ID as u64) as *const u32) >> 24 }
+}
+
+pub fn x2apic_enabled() -> bool {
+    x2()
 }
 
 pub fn eoi() {
@@ -103,6 +133,11 @@ pub fn now_ns() -> u64 {
 }
 
 fn send_ipi(apic_id: u32, low: u32) {
+    if x2() {
+        // One 64-bit write; no delivery-status bit to wait for.
+        cpu::wrmsr(0x830, ((apic_id as u64) << 32) | low as u64);
+        return;
+    }
     while lapic_read(ICR_LO) & (1 << 12) != 0 {
         core::hint::spin_loop();
     }
@@ -152,4 +187,9 @@ pub fn route_irq(gsi: u32, apic_id: u32, level_low: bool) {
     }
     ioapic_write(0x10 + 2 * gsi, lo);
     ioapic_write(0x11 + 2 * gsi, apic_id << 24);
+}
+
+/// TSC frequency in MHz (from the calibration against the PIT).
+pub fn tsc_mhz() -> u64 {
+    tsc_per_us()
 }

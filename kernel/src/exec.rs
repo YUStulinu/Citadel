@@ -117,7 +117,7 @@ fn exec_depth(p: &Arc<Process>, path: &str, argv: &[String], envp: &[String], fr
             page += 4096;
         }
         let prot = (if s.readable { PROT_READ } else { 0 }) | (if s.writable { PROT_WRITE } else { 0 }) | (if s.executable { PROT_EXEC } else { 0 });
-        vmas.push(Vma { start, end, prot, grows_down: false });
+        vmas.push(Vma { start, end, prot, grows_down: false, nohuge: false });
         brk = brk.max(end);
     }
 
@@ -133,7 +133,7 @@ fn exec_depth(p: &Arc<Process>, path: &str, argv: &[String], envp: &[String], fr
         stack_frames.push(ph);
         page += 4096;
     }
-    vmas.push(Vma { start: stack_low, end: STACK_TOP, prot: PROT_READ | PROT_WRITE, grows_down: true });
+    vmas.push(Vma { start: stack_low, end: STACK_TOP, prot: PROT_READ | PROT_WRITE, grows_down: true, nohuge: true });
 
     // Lay out the initial stack in a buffer that mirrors [stack_low, STACK_TOP).
     let mut buf = alloc::vec![0u8; STACK_EAGER as usize];
@@ -224,8 +224,10 @@ fn exec_depth(p: &Arc<Process>, path: &str, argv: &[String], envp: &[String], fr
         mm.mmap_next = crate::proc::MMAP_TOP;
         let t = crate::sched::current();
         t.cr3.store(cr3, Ordering::Release);
-        crate::arch::cpu::write_cr3(cr3);
+        crate::sched::load_cr3(cr3);
+        drop(mm);
         if old != paging::kernel_pml4() {
+            crate::sched::evict_lazy_cr3(old);
             paging::free_address_space(old);
         }
     }

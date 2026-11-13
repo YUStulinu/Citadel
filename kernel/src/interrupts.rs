@@ -24,7 +24,8 @@ const NAMES: [&str; 21] = [
 pub fn handle(f: &mut TrapFrame) {
     let v = f.vector as u8;
     let pc = percpu::this();
-    pc.irq_depth.fetch_add(1, Ordering::Relaxed);
+    // Per-CPU counter: a plain load and store, no locked instruction.
+    pc.irq_depth.store(pc.irq_depth.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
     match v {
         14 => crate::mm::fault::page_fault(f, cpu::read_cr2()),
         0..=31 => exception(f),
@@ -36,6 +37,10 @@ pub fn handle(f: &mut TrapFrame) {
         apic::IPI_RESCHEDULE => {
             apic::eoi();
             pc.sched.need_resched.store(true, Ordering::Relaxed);
+        }
+        apic::IPI_TLB => {
+            apic::eoi();
+            crate::sched::handle_tlb_ipi();
         }
         apic::IPI_HALT => {
             apic::eoi();
@@ -54,7 +59,7 @@ pub fn handle(f: &mut TrapFrame) {
             apic::eoi();
         }
     }
-    pc.irq_depth.fetch_sub(1, Ordering::Relaxed);
+    pc.irq_depth.store(pc.irq_depth.load(Ordering::Relaxed) - 1, Ordering::Relaxed);
     // Preemption point: on the way back to user mode, or out of the idle loop.
     if pc.sched.need_resched.load(Ordering::Relaxed) && (f.from_user() || crate::sched::try_current().is_some_and(|t| t.is_idle)) {
         crate::sched::schedule();

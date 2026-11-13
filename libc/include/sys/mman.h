@@ -14,4 +14,9 @@
 void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off);
 int munmap(void *addr, size_t len);
 int mprotect(void *addr, size_t len, int prot);
+#define MADV_NORMAL 0
+#define MADV_DONTNEED 4
+#define MADV_HUGEPAGE 14
+#define MADV_NOHUGEPAGE 15
+int madvise(void *addr, size_t len, int advice);
 #endif

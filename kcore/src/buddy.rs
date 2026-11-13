@@ -185,6 +185,22 @@ mod tests {
     }
 
     #[test]
+    fn huge_block_freed_in_small_pieces_merges_back() {
+        // A 2 MiB block split into 4 KiB pages (as when a huge page is broken up) and freed page
+        // by page must end up as free large blocks again.
+        let mut meta = vec![0u8; 4096];
+        let mut b = Buddy::new(Fake::default(), BASE, &mut meta);
+        b.add_region(BASE, BASE + 2048 * PAGE);
+        let blk = b.alloc(9).unwrap();
+        assert_eq!(blk % (512 * PAGE), BASE % (512 * PAGE));
+        for i in 0..512 {
+            b.free(blk + i * PAGE, 0);
+        }
+        assert_eq!(b.free_frames(), 2048);
+        assert_eq!(b.counts()[MAX_ORDER], 2);
+    }
+
+    #[test]
     fn unaligned_regions_and_exhaustion() {
         let mut meta = vec![0u8; 4096];
         let mut b = Buddy::new(Fake::default(), BASE, &mut meta);

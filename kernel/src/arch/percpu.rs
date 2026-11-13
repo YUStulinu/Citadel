@@ -16,7 +16,14 @@ pub struct PerCpu {
     self_ptr: u64,
     pub kernel_stack_top: u64,
     pub user_rsp: u64,
+    /// The running task (raw pointer, offset 24): read with one gs-relative load, so it cannot
+    /// be torn by a migration between reading the per-CPU base and the field.
+    pub current_task: u64,
     pub id: usize,
+    /// The CR3 this CPU has loaded, and the TLB generation of that address space at the time
+    /// (see sched: kernel threads and the idle task keep the last user address space loaded).
+    pub loaded_cr3: AtomicU64,
+    pub loaded_gen: AtomicU64,
     pub apic_id: u32,
     pub gdt: Gdt,
     pub tss: Tss,
@@ -37,7 +44,10 @@ pub fn init_this_cpu(id: usize, apic_id: u32, double_fault_stack: u64) -> &'stat
         self_ptr: 0,
         kernel_stack_top: 0,
         user_rsp: 0,
+        current_task: 0,
         id,
+        loaded_cr3: AtomicU64::new(cpu::read_cr3() & crate::mm::paging::ADDR),
+        loaded_gen: AtomicU64::new(0),
         apic_id,
         gdt: Gdt::new(),
         tss: Tss::default(),

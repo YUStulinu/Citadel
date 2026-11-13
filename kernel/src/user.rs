@@ -9,8 +9,8 @@ use kcore::errno::*;
 use crate::mm::{fault, paging};
 
 fn page_ok(cr3: u64, page: u64, write: bool) -> bool {
-    match paging::entry(cr3, page) {
-        Some(e) => *e & paging::U != 0 && (!write || *e & paging::W != 0),
+    match paging::leaf(cr3, page) {
+        Some(e) => e & paging::U != 0 && (!write || e & paging::W != 0),
         None => false,
     }
 }
@@ -35,6 +35,29 @@ pub fn check(addr: u64, len: usize, write: bool) -> KResult<()> {
     Ok(())
 }
 
+/// The user range as a kernel slice, after checking it and faulting it in.
+///
+/// # Safety
+/// Valid while the process's mappings do not change: Citadel processes are single-threaded, so
+/// nothing can unmap the range during the system call that uses it.
+pub unsafe fn slice<'a>(addr: u64, len: usize) -> KResult<&'a [u8]> {
+    if len == 0 {
+        return Ok(&[]);
+    }
+    check(addr, len, false)?;
+    Ok(unsafe { core::slice::from_raw_parts(addr as *const u8, len) })
+}
+
+/// # Safety
+/// As for [`slice`].
+pub unsafe fn slice_mut<'a>(addr: u64, len: usize) -> KResult<&'a mut [u8]> {
+    if len == 0 {
+        return Ok(&mut []);
+    }
+    check(addr, len, true)?;
+    Ok(unsafe { core::slice::from_raw_parts_mut(addr as *mut u8, len) })
+}
+
 pub fn copy_in(addr: u64, dst: &mut [u8]) -> KResult<()> {
     check(addr, dst.len(), false)?;
     unsafe { core::ptr::copy_nonoverlapping(addr as *const u8, dst.as_mut_ptr(), dst.len()) };
@@ -55,23 +78,24 @@ pub fn read_vec(addr: u64, len: usize) -> KResult<Vec<u8>> {
 
 /// A NUL-terminated string of at most `max` bytes.
 pub fn read_cstr(addr: u64, max: usize) -> KResult<String> {
-    let mut out = Vec::new();
+    let mut out: Vec<u8> = Vec::new();
     let mut a = addr;
     loop {
-        // Check a page at a time (the string may end before the next page exists).
+        // Check a page at a time (the string may end before the next page exists), then copy
+        // up to the terminator in one piece.
         let page_end = (a & !0xfff) + 4096;
         check(a, (page_end - a) as usize, false)?;
-        while a < page_end {
-            let c = unsafe { *(a as *const u8) };
-            if c == 0 {
-                return String::from_utf8(out).map_err(|_| EINVAL);
-            }
-            out.push(c);
-            if out.len() > max {
-                return Err(ENAMETOOLONG);
-            }
-            a += 1;
+        let chunk = unsafe { core::slice::from_raw_parts(a as *const u8, (page_end - a) as usize) };
+        let end = chunk.iter().position(|&c| c == 0);
+        let piece = &chunk[..end.unwrap_or(chunk.len())];
+        if out.len() + piece.len() > max {
+            return Err(ENAMETOOLONG);
         }
+        out.extend_from_slice(piece);
+        if end.is_some() {
+            return String::from_utf8(out).map_err(|_| EINVAL);
+        }
+        a = page_end;
     }
 }
 

@@ -29,6 +29,8 @@ pub struct Vma {
     pub end: u64,
     pub prot: u32,
     pub grows_down: bool,
+    /// madvise(MADV_NOHUGEPAGE): fault this area in 4 KiB pages only.
+    pub nohuge: bool,
 }
 
 pub struct Mm {
@@ -315,6 +317,7 @@ pub fn fork(parent_frame: &TrapFrame) -> KResult<u32> {
     let fs_base = crate::arch::cpu::rdmsr(crate::arch::cpu::MSR_FS_BASE);
     let task = sched::create_task(&name, move || enter_user(frame));
     task.fs_base.store(fs_base, Ordering::Relaxed);
+    task.affinity.store(sched::current().affinity.load(Ordering::Relaxed), Ordering::Relaxed);
     unsafe {
         // The child continues with the parent's FPU/SSE state.
         core::arch::asm!("fxsave64 [{}]", in(reg) (*task.fpu.get()).0.as_mut_ptr());
@@ -336,14 +339,16 @@ pub fn exit(wstatus: i32) -> ! {
     let files: Vec<Option<FdEntry>> = core::mem::take(&mut p.fds.lock().fds);
     drop(files);
     {
-        let mut mm = p.mm.lock();
-        let cr3 = mm.cr3;
-        mm.vmas.clear();
+        let cr3 = {
+            let mut mm = p.mm.lock();
+            mm.vmas.clear();
+            core::mem::replace(&mut mm.cr3, paging::kernel_pml4())
+        };
         // Run on the kernel's page tables while the process's are freed.
-        crate::arch::cpu::write_cr3(paging::kernel_pml4());
         sched::current().cr3.store(paging::kernel_pml4(), Ordering::Release);
+        sched::load_cr3(paging::kernel_pml4());
+        sched::evict_lazy_cr3(cr3);
         paging::free_address_space(cr3);
-        mm.cr3 = paging::kernel_pml4();
     }
     // Children go to init.
     let orphans: Vec<Arc<Process>> = core::mem::take(&mut *p.children.lock());

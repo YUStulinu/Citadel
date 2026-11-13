@@ -22,7 +22,7 @@ fn file(fd: i64) -> KResult<Arc<File>> {
 /// The absolute path for (dirfd, path).
 pub fn abs_path(dirfd: i64, path: &str) -> KResult<String> {
     if path.starts_with('/') {
-        return Ok(kcore::path::normalize("/", path));
+        return Ok(if kcore::path::is_normal(path) { String::from(path) } else { kcore::path::normalize("/", path) });
     }
     let base = if dirfd == AT_FDCWD {
         proc::current().cwd.lock().clone()
@@ -38,17 +38,15 @@ pub fn abs_path(dirfd: i64, path: &str) -> KResult<String> {
 
 pub fn read(fd: i64, buf: u64, len: usize) -> KResult<u64> {
     let f = file(fd)?;
-    user::check(buf, len, true)?;
-    let mut tmp = alloc::vec![0u8; len.min(1 << 20)];
-    let n = f.read(&mut tmp)?;
-    user::copy_out(buf, &tmp[..n])?;
-    Ok(n as u64)
+    // The user buffer is checked and faulted in, then filled directly (no bounce buffer).
+    let dst = unsafe { user::slice_mut(buf, len.min(1 << 24))? };
+    Ok(f.read(dst)? as u64)
 }
 
 pub fn write(fd: i64, buf: u64, len: usize) -> KResult<u64> {
     let f = file(fd)?;
-    let data = user::read_vec(buf, len.min(1 << 20))?;
-    Ok(f.write(&data)? as u64)
+    let src = unsafe { user::slice(buf, len.min(1 << 24))? };
+    Ok(f.write(src)? as u64)
 }
 
 pub fn pread(fd: i64, buf: u64, len: usize, off: u64) -> KResult<u64> {

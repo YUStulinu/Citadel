@@ -26,7 +26,9 @@ pub extern "C" fn dispatch(f: &mut TrapFrame) {
     cpu::enable_irq();
     let nr = f.rax;
     if (nr as usize) < COUNTS.len() {
-        COUNTS[nr as usize].fetch_add(1, Ordering::Relaxed);
+        // A statistic: a plain load and store (no locked instruction); rare lost updates are fine.
+        let c = &COUNTS[nr as usize];
+        c.store(c.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
     }
     let a = [f.rdi, f.rsi, f.rdx, f.r10, f.r8, f.r9];
     let r: KResult<u64> = match nr {
@@ -94,7 +96,7 @@ pub extern "C" fn dispatch(f: &mut TrapFrame) {
         11 => mm::munmap(a[0], a[1]),
         12 => mm::brk(a[0]),
         25 => Err(ENOMEM), // mremap
-        28 => Ok(0),       // madvise
+        28 => mm::madvise(a[0], a[1], a[2] as u32),
         // signals
         13 => proc::rt_sigaction(a[0] as u32, a[1], a[2]),
         14 => proc::rt_sigprocmask(a[0] as u32, a[1], a[2]),
@@ -110,6 +112,8 @@ pub extern "C" fn dispatch(f: &mut TrapFrame) {
             Ok(0)
         }
         39 => Ok(crate::proc::current().pid as u64),
+        203 => proc::sched_setaffinity(a[0] as u32, a[1] as usize, a[2]),
+        204 => proc::sched_getaffinity(a[0] as u32, a[1] as usize, a[2]),
         56 => proc::clone(f, a[0]),
         57 | 58 => crate::proc::fork(f).map(|p| p as u64),
         59 => proc::execve(f, a[0], a[1], a[2]),

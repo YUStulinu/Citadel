@@ -108,6 +108,32 @@ pub fn cpuid(leaf: u32, sub: u32) -> CpuidResult {
     CpuidResult { eax: r.eax, ebx: r.ebx, ecx: r.ecx, edx: r.edx }
 }
 
+/// CPU vendor string from CPUID leaf 0.
+pub fn vendor() -> alloc::string::String {
+    let r = cpuid(0, 0);
+    let mut b = [0u8; 12];
+    b[0..4].copy_from_slice(&r.ebx.to_le_bytes());
+    b[4..8].copy_from_slice(&r.edx.to_le_bytes());
+    b[8..12].copy_from_slice(&r.ecx.to_le_bytes());
+    alloc::string::String::from_utf8_lossy(&b).into_owned()
+}
+
+/// CPU brand string from CPUID leaves 0x80000002..4.
+pub fn brand() -> alloc::string::String {
+    if cpuid(0x8000_0000, 0).eax < 0x8000_0004 {
+        return alloc::string::String::from("unknown");
+    }
+    let mut b = alloc::vec::Vec::new();
+    for leaf in 0x8000_0002..=0x8000_0004u32 {
+        let r = cpuid(leaf, 0);
+        for w in [r.eax, r.ebx, r.ecx, r.edx] {
+            b.extend_from_slice(&w.to_le_bytes());
+        }
+    }
+    let s = alloc::string::String::from_utf8_lossy(&b).into_owned();
+    alloc::string::String::from(s.trim_matches(char::from(0)).trim())
+}
+
 pub const MSR_EFER: u32 = 0xc000_0080;
 pub const MSR_STAR: u32 = 0xc000_0081;
 pub const MSR_LSTAR: u32 = 0xc000_0082;

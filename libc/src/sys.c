@@ -219,6 +219,7 @@ int brk(void *a) {
     cur_brk = a;
     return 0;
 }
+int madvise(void *a, size_t n, int adv) { return __ret(__sc3(SYS_madvise, a, n, adv)); }
 void *sbrk(long inc) {
     if (!cur_brk) cur_brk = (char *)__sc1(SYS_brk, 0);
     char *old = cur_brk;
@@ -238,6 +239,11 @@ int setrlimit(int r, const struct rlimit *l) { return __ret(__sc2(SYS_setrlimit,
 int getrusage(int w, struct rusage *u) { return __ret(__sc2(SYS_getrusage, w, u)); }
 clock_t times(struct tms *t) { return __ret(__sc1(SYS_times, t)); }
 int sched_yield(void) { return __ret(__sc0(SYS_sched_yield)); }
+int sched_setaffinity(pid_t pid, size_t size, const cpu_set_t *set) { return __ret(__sc3(SYS_sched_setaffinity, pid, size, set)); }
+int sched_getaffinity(pid_t pid, size_t size, cpu_set_t *set) {
+    long r = __ret(__sc3(SYS_sched_getaffinity, pid, size, set));
+    return r < 0 ? -1 : 0;
+}
 int getpagesize(void) { return 4096; }
 
 long sysconf(int name) {
