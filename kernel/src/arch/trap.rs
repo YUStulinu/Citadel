@@ -67,10 +67,22 @@ global_asm!(
     .section .text
     .global trap_common
 trap_common:
-    test qword ptr [rsp + 24], 3      // CS of the interrupted code
-    jz 1f
+    // Swap to the kernel's GS unless it is already loaded. Like Linux's paranoid entry, this
+    // looks at the GS base itself (kernel addresses have the top bit set) instead of trusting
+    // the interrupted CS, so even a fault taken at the edge of a return to user mode (GS
+    // already swapped back) runs with the kernel's per-CPU data.
+    push rax
+    push rcx
+    push rdx
+    mov ecx, 0xc0000101               // IA32_GS_BASE
+    rdmsr
+    test edx, edx
+    js 1f
     swapgs
-1:  push rax
+1:  pop rdx
+    pop rcx
+    pop rax
+    push rax
     push rbx
     push rcx
     push rdx

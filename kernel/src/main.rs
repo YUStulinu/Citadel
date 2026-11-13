@@ -88,6 +88,7 @@ extern "C" fn kmain(boot_info_phys: u64) -> ! {
     sched::init_cpu();
     apic::start_timer(sched::HZ);
     kprintln!("citadel: TSC {} MHz, {} CPUs in ACPI, {}", apic::tsc_per_us(), madt.apic_ids.len(), if apic::x2apic_enabled() { "x2APIC" } else { "xAPIC" });
+    kprintln!("citadel: CPU {} ({})", cpu::brand(), cpu::vendor());
 
     let aps = smp::start_aps(&madt.apic_ids);
     kprintln!("citadel: {} CPUs online", 1 + aps);

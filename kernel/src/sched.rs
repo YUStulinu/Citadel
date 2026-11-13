@@ -26,7 +26,10 @@ pub const RUNNABLE: u8 = 1;
 pub const SLEEPING: u8 = 2;
 pub const DEAD: u8 = 3;
 
-pub const KSTACK_ORDER: usize = 2; // 16 KiB kernel stacks
+pub const KSTACK_ORDER: usize = 3; // 32 KiB kernel stacks
+/// Written at the bottom of every kernel stack and checked at each switch: an overflow becomes a
+/// clear panic instead of silent corruption of the neighbouring memory.
+const STACK_CANARY: u64 = 0x5354_4143_4b21_c0de;
 pub const HZ: u64 = 250;
 const SLICE_TICKS: u32 = 5; // 20 ms
 
@@ -170,6 +173,7 @@ extern "C" fn task_start() -> ! {
 
 fn new_task(name: &str, f: Option<Box<dyn FnOnce() + Send>>, idle: bool) -> Arc<Task> {
     let kstack = frame::alloc_zeroed(KSTACK_ORDER).expect("out of memory for a kernel stack");
+    unsafe { *(phys_to_virt(kstack) as *mut u64) = STACK_CANARY };
     let t = Arc::new(Task {
         tid: NEXT_TID.fetch_add(1, Ordering::Relaxed),
         name: SpinLock::new(String::from(name)),
@@ -417,6 +421,9 @@ pub fn schedule() {
     next.switched_in_at.store(now, Ordering::Relaxed);
     cs.idle_since.store(if next.is_idle { now.max(1) } else { 0 }, Ordering::Relaxed);
 
+    if cur.kstack_phys != 0 && unsafe { *(phys_to_virt(cur.kstack_phys) as *const u64) } != STACK_CANARY && !cur.is_idle {
+        panic!("kernel stack overflow in task {} ({})", cur.tid, cur.name.lock().as_str());
+    }
     // Hardware state: FPU/SSE registers, FS base (TLS), address space, kernel stack.
     unsafe {
         core::arch::asm!("fxsave64 [{}]", in(reg) (*cur.fpu.get()).0.as_mut_ptr());
@@ -452,6 +459,10 @@ pub fn schedule() {
         *cs.current.get() = Some(next);
     }
     drop(cur); // the reference in `prev` keeps the task alive until finish_switch
+    // AMD's SYSRET leaves the hidden SS attributes as they were; after an interrupt from user
+    // mode SS is the null selector. Load a proper kernel SS before running another task (as
+    // Linux does for X86_BUG_SYSRET_SS_ATTRS); harmless elsewhere.
+    unsafe { core::arch::asm!("mov {0:x}, 0x10", "mov ss, {0:x}", out(reg) _, options(nostack, preserves_flags)) };
     unsafe { switch_context(save, new_rsp) };
     // Back on this task, possibly on another CPU.
     finish_switch();
