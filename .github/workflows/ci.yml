@@ -80,6 +80,8 @@ jobs:
           e2fsck -fn build/root.img
       - name: Shell and processes
         run: sh tools/guest-test.sh 300 /bin/sh /tests/smoke.sh
+      - name: Memory comes back after 2000 processes exit
+        run: sh tools/guest-test.sh 300 /bin/sh /tests/leak.sh
       - name: ext2 on virtio-blk, then e2fsck on what the kernel wrote
         run: |
           sh tools/guest-test.sh 300 /bin/sh /tests/disk.sh

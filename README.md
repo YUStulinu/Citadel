@@ -72,44 +72,77 @@ against binutils' `c++filt`). The page has a VT100 terminal and a live view: bus
 kernel functions in the last half-second and since the start, and processes in user mode. Sessions
 can be recorded and replayed.
 
+![The web console: Citadel's serial console on the left, the live kernel profile on the right](docs/web-console.jpg)
+
+*A recorded session replayed in the web console: boot, the shell, Lua, benchmarks. The profile
+names the kernel's functions from its own symbol table.*
+
 ## Results
 
 All numbers come from the same machine (Intel Core i7-10870H, Windows 11, WSL2 Ubuntu 24.04, QEMU 8.2
 with KVM, so the guests run under **nested virtualization**), with 4 virtual CPUs and 1 GiB of memory
 for both systems. Linux is Alpine 3.20's `linux-virt` kernel (6.6 LTS) booted directly by QEMU with
-Citadel's initrd. Host frequency scaling moves results by up to ±10% between runs;
-`tools/eval.sh` alternates the two systems over several rounds to reproduce them.
+Citadel's initrd. Host frequency scaling moves single runs by up to ±10%, so `tools/eval.sh` runs
+everything in 3 rounds, alternating the two systems, and the tables show the median of the rounds
+(each round's value is itself the median of 7 runs). The full table is in
+[results/eval.md](results/eval.md).
 
-### Micro-benchmarks (`user/bench/bench.c`, median of 7 runs, lower is better)
+### Micro-benchmarks (`user/bench/bench.c`, lower is better)
 
 | benchmark | Citadel | Linux | |
 |---|---:|---:|---|
-| system call (`getppid`) | 77 ns | 134 ns | 1.7x faster |
-| context switch (two processes on one CPU, pipe ping-pong) | 1.17 µs | 1.41 µs | 1.2x faster |
-| pipe round trip between two CPUs (wake-up across CPUs) | 20.8 µs | 18.3 µs | 1.1x slower |
-| `fork` + `exit` + `wait` | 33 µs | 67 µs | 2.0x faster |
-| `fork` + `exec` + `wait` | 110 µs | 137 µs | 1.2x faster |
-| pipe throughput | 116 ns/KiB | 255 ns/KiB | 2.2x faster |
-| first touch of anonymous memory, per 4 KiB (both use 2 MiB pages) | 195 ns | 372 ns | 1.9x faster |
-| same with `MADV_NOHUGEPAGE` (4 KiB faults) | 775 ns | 1049 ns | 1.4x faster |
-| `open` + `close` | 815 ns | 1120 ns | 1.4x faster |
-| `stat` | 563 ns | 651 ns | 1.2x faster |
-| tmpfs write | 56 ns/KiB | 259 ns/KiB | 4.6x faster |
+| system call (`getppid`) | 95 ns | 170 ns | 1.80x faster |
+| context switch (two processes on one CPU, pipe ping-pong) | 1.39 µs | 1.76 µs | 1.27x faster |
+| pipe round trip between two CPUs (wake-up across CPUs) | 29.7 µs | 25.2 µs | 1.18x slower |
+| `fork` + `exit` + `wait` | 36.2 µs | 91.6 µs | 2.53x faster |
+| `fork` + `exec` + `wait` | 148 µs | 190 µs | 1.28x faster |
+| pipe throughput | 161 ns/KiB | 429 ns/KiB | 2.67x faster |
+| first touch of anonymous memory, per 4 KiB (both use 2 MiB pages) | 358 ns | 545 ns | 1.52x faster |
+| same with `MADV_NOHUGEPAGE` (4 KiB faults) | 1011 ns | 1436 ns | 1.42x faster |
+| `open` + `close` | 1021 ns | 1542 ns | 1.51x faster |
+| `stat` | 753 ns | 903 ns | 1.20x faster |
+| tmpfs write | 66 ns/KiB | 332 ns/KiB | 5.06x faster |
+
+Absolute times move with the host. An earlier full run, made on a quieter host and before a
+kernel-stack leak in process exit was fixed, measured most of these 15–25% lower on both systems:
+the system call took 79 ns on Citadel and 137 ns on Linux. The ratios were similar, except `fork` +
+`exit` + `wait`, which gained most from the fix. Within one run, the system-call times vary by only
+a few percent between rounds (Citadel 93–97 ns, Linux 165–178 ns).
+
+The one loss is waking a process on another CPU. Both kernels idle with `hlt`, and the remaining
+gap is in the wake-up path under nested virtualization.
 
 These compare a small kernel with a general-purpose one. Linux does much more on these paths:
 security mitigations, auditing and accounting hooks, cgroups, namespaces, generic layers for many
 file systems and devices, and real multi-threaded process support. Citadel's lead mostly shows how
 much that costs, not that Citadel would do Linux's job faster. Where Citadel was slower than Linux
-at first, the reasons were concrete and are fixed in the code: xAPIC IPIs cost three VM exits (now
-x2APIC), page faults were 4 KiB while Linux used transparent huge pages (now both do), each
-idle→process switch flushed the TLB (now lazy TLB), and path lookup allocated strings at every step.
+at first, the reasons were concrete and are fixed in the code:
+- xAPIC IPIs cost three VM exits (now x2APIC);
+- page faults were 4 KiB while Linux used transparent huge pages (now both do);
+- each idle→process switch flushed the TLB (now lazy TLB);
+- path lookup allocated strings at every step.
+
+### Lua (the same interpreter binary, `rootfs/tests/bench.lua`, best of 3 per round, lower is better)
+
+| workload | Citadel, 3 rounds | Linux, 3 rounds |
+|---|---:|---:|
+| `fib(30)`: function calls, no system calls | 63.7 – 73.2 ms | 63.1 – 70.8 ms |
+| sieve of 3,000,000: one large table | 378 – 449 ms | 344 – 441 ms |
+| 300,000 `string.format` + `gmatch`: many small strings | 387 – 475 ms | 438 – 499 ms |
+
+This is the control: user-mode work, where the kernel should not matter. The ranges overlap and
+neither system wins consistently: in an earlier full run, Citadel's medians were 3–16% lower, and in
+this one `fib` and the sieve were 10–14% higher. The variation comes from the host, not the kernels.
+The system-call benchmarks above differ by much more than this noise.
 
 ### HTTP (`user/httpd.c` serving a 279-byte page from memory; load from the host with `tools/httpload.c`, 32 keep-alive connections, 10 s, through QEMU's user network)
 
-| | Citadel | Linux |
-|---|---:|---:|
-| requests per second (two rounds) | 66,691 / 78,188 | 60,797 / 72,032 |
-| latency p50 | 450 / 383 µs | 492 / 414 µs |
+| | Citadel | Linux | |
+|---|---:|---:|---|
+| requests per second | 69,608 | 54,982 | 1.27x more |
+| latency p50 | 434 µs | 554 µs | 1.28x lower |
+
+(The earlier full run gave 69,951 against 63,588 requests per second.)
 
 The first working version did 14,000 requests per second. The profiler showed the machine 81% idle
 under load: the cost was latency, not CPU. The fixes:

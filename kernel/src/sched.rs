@@ -163,8 +163,10 @@ unsafe extern "C" {
 extern "C" fn task_start() -> ! {
     finish_switch();
     cpu::enable_irq();
-    let t = current();
-    let f = t.entry.lock().take();
+    // No reference to the task may stay in this frame: `f` usually never returns (it enters user
+    // mode on this stack), so a local Arc here would keep the task, and its kernel stack, alive
+    // forever.
+    let f = current_ref().entry.lock().take();
     if let Some(f) = f {
         f();
     }
