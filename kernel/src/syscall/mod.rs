@@ -14,7 +14,10 @@ use kcore::errno::*;
 use crate::arch::{cpu, gdt, trap::{self, TrapFrame}};
 
 pub fn init_msrs() {
-    cpu::wrmsr(cpu::MSR_STAR, ((gdt::KDATA as u64) << 48) | ((gdt::KCODE as u64) << 32));
+    // SYSRET loads CS = base + 16 and SS = base + 8. The base carries RPL 3 (as in Linux): Intel
+    // forces RPL 3 into the loaded selectors, but AMD does not, and a user SS of 0x18 (RPL 0)
+    // would make the next IRET to user mode fault with #GP(0x18).
+    cpu::wrmsr(cpu::MSR_STAR, (((gdt::KDATA as u64) | 3) << 48) | ((gdt::KCODE as u64) << 32));
     cpu::wrmsr(cpu::MSR_LSTAR, trap::syscall_entry_address());
     cpu::wrmsr(cpu::MSR_FMASK, 0x4_0700); // clear IF, DF, TF, AC on entry
 }
